@@ -1,0 +1,272 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+pub struct WorkspaceInfo {
+    pub root_path: PathBuf,
+    pub workspace_deps: HashMap<String, WorkspaceDep>,
+    pub members: Vec<MemberCrate>,
+}
+
+pub struct WorkspaceDep {
+    pub version: Option<String>,
+}
+
+pub struct MemberCrate {
+    #[allow(dead_code)]
+    pub path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub dependencies: Vec<MemberDep>,
+}
+
+pub struct MemberDep {
+    pub name: String,
+    pub package: Option<String>,
+    pub version: Option<String>,
+    pub workspace: bool,
+    #[allow(dead_code)]
+    pub section: DepSection,
+}
+
+#[derive(Debug, Clone)]
+pub enum DepSection {
+    Normal,
+    Dev,
+    Build,
+}
+
+impl std::fmt::Display for DepSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DepSection::Normal => write!(f, "dependencies"),
+            DepSection::Dev => write!(f, "dev-dependencies"),
+            DepSection::Build => write!(f, "build-dependencies"),
+        }
+    }
+}
+
+pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
+    let root_toml_path = path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&root_toml_path)
+        .map_err(|e| format!("Failed to read {}: {e}", root_toml_path.display()))?;
+    let doc: toml::Table = content
+        .parse()
+        .map_err(|e| format!("Failed to parse {}: {e}", root_toml_path.display()))?;
+
+    let workspace_table = doc
+        .get("workspace")
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| format!("No [workspace] section in {}", root_toml_path.display()))?;
+
+    let workspace_deps = parse_workspace_deps(workspace_table);
+
+    let member_patterns: Vec<String> = workspace_table
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let exclude_patterns: Vec<String> = workspace_table
+        .get("exclude")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let member_paths = expand_members(path, &member_patterns, &exclude_patterns)?;
+
+    let mut members = Vec::new();
+    for member_path in member_paths {
+        let manifest_path = member_path.join("Cargo.toml");
+        match parse_member(&manifest_path) {
+            Ok(member) => members.push(member),
+            Err(e) => eprintln!("warning: skipping {}: {e}", manifest_path.display()),
+        }
+    }
+
+    Ok(WorkspaceInfo {
+        root_path: path.to_path_buf(),
+        workspace_deps,
+        members,
+    })
+}
+
+fn parse_workspace_deps(workspace_table: &toml::Table) -> HashMap<String, WorkspaceDep> {
+    let mut deps = HashMap::new();
+    if let Some(dep_table) = workspace_table
+        .get("dependencies")
+        .and_then(|v| v.as_table())
+    {
+        for (name, value) in dep_table {
+            let version = match value {
+                toml::Value::String(s) => Some(s.clone()),
+                toml::Value::Table(t) => {
+                    t.get("version").and_then(|v| v.as_str()).map(String::from)
+                }
+                _ => None,
+            };
+            deps.insert(name.clone(), WorkspaceDep { version });
+        }
+    }
+    deps
+}
+
+fn expand_members(
+    root: &Path,
+    patterns: &[String],
+    excludes: &[String],
+) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for pattern in patterns {
+        let full_pattern = root.join(pattern).to_string_lossy().to_string();
+        let matches = glob::glob(&full_pattern)
+            .map_err(|e| format!("Invalid glob pattern '{pattern}': {e}"))?;
+        for entry in matches {
+            let entry = entry.map_err(|e| format!("Glob error: {e}"))?;
+            if entry.join("Cargo.toml").exists() {
+                paths.push(entry);
+            }
+        }
+    }
+    if !excludes.is_empty() {
+        let exclude_paths: Vec<PathBuf> = excludes.iter().map(|e| root.join(e)).collect();
+        paths.retain(|p| !exclude_paths.iter().any(|ex| p.starts_with(ex) || p == ex));
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
+    let content = std::fs::read_to_string(manifest_path)
+        .map_err(|e| format!("Failed to read {}: {e}", manifest_path.display()))?;
+    let doc: toml::Table = content
+        .parse()
+        .map_err(|e| format!("Failed to parse {}: {e}", manifest_path.display()))?;
+
+    let mut dependencies = Vec::new();
+
+    let sections = [
+        ("dependencies", DepSection::Normal),
+        ("dev-dependencies", DepSection::Dev),
+        ("build-dependencies", DepSection::Build),
+    ];
+
+    for (key, section) in &sections {
+        if let Some(dep_table) = doc.get(*key).and_then(|v| v.as_table()) {
+            parse_dep_table(dep_table, section.clone(), &mut dependencies);
+        }
+    }
+
+    // Also check target-specific deps
+    if let Some(target_table) = doc.get("target").and_then(|v| v.as_table()) {
+        for (_target_cfg, target_value) in target_table {
+            if let Some(target_tbl) = target_value.as_table() {
+                for (key, section) in &sections {
+                    if let Some(dep_table) = target_tbl.get(*key).and_then(|v| v.as_table()) {
+                        parse_dep_table(dep_table, section.clone(), &mut dependencies);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(MemberCrate {
+        path: manifest_path.parent().unwrap().to_path_buf(),
+        manifest_path: manifest_path.to_path_buf(),
+        dependencies,
+    })
+}
+
+fn parse_dep_table(table: &toml::Table, section: DepSection, deps: &mut Vec<MemberDep>) {
+    for (key, value) in table {
+        let (version, workspace, package) = match value {
+            toml::Value::String(s) => (Some(s.clone()), false, None),
+            toml::Value::Table(t) => {
+                let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
+                let workspace = t
+                    .get("workspace")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let package = t.get("package").and_then(|v| v.as_str()).map(String::from);
+                (version, workspace, package)
+            }
+            _ => continue,
+        };
+
+        // Skip pure path/git deps with no version
+        if !workspace
+            && version.is_none()
+            && let toml::Value::Table(t) = value
+            && (t.contains_key("path") || t.contains_key("git"))
+        {
+            continue;
+        }
+
+        deps.push(MemberDep {
+            name: key.clone(),
+            package,
+            version,
+            workspace,
+            section: section.clone(),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn test_parse_valid_workspace() {
+        let ws = parse_workspace(&fixture("valid_workspace")).unwrap();
+        assert_eq!(ws.workspace_deps.len(), 1);
+        assert!(ws.workspace_deps.contains_key("serde"));
+        assert_eq!(ws.members.len(), 2);
+    }
+
+    #[test]
+    fn test_workspace_exclude() {
+        let ws = parse_workspace(&fixture("with_exclude")).unwrap();
+        assert_eq!(ws.members.len(), 1);
+        assert!(
+            ws.members[0]
+                .manifest_path
+                .to_str()
+                .unwrap()
+                .contains("included")
+        );
+    }
+
+    #[test]
+    fn test_member_deps_parsed() {
+        let ws = parse_workspace(&fixture("valid_workspace")).unwrap();
+        for member in &ws.members {
+            assert!(!member.dependencies.is_empty());
+            assert!(member.dependencies[0].workspace);
+        }
+    }
+
+    #[test]
+    fn test_no_workspace_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let result = parse_workspace(dir.path());
+        assert!(result.is_err());
+    }
+}

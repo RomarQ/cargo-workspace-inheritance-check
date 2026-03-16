@@ -1,0 +1,18 @@
+[package]
+name = "cargo-workspace-inheritance-check"
+version = "0.1.0"
+edition = "2024"
+authors = ["Rodrigo Quelhas"]
+description = "Check and fix workspace dependency inheritance hygiene in Cargo workspaces"
+license = "MIT"
+repository = "https://github.com/RomarQ/cargo-workspace-inheritance-check"
+
+[dependencies]
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
