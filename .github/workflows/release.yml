@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare-release:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate new version
+        id: version
+        run: |
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "${{ inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEW"
+
+      - name: Update Cargo.toml version
+        run: sed -i "s/^version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" Cargo.toml
+
+      - name: Generate changelog entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          DATE=$(date +%Y-%m-%d)
+          PREVIOUS_TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            NOTES=$(gh api repos/${{ github.repository }}/releases/generate-notes \
+              -f tag_name="v${VERSION}" \
+              -f target_commitish=main \
+              -f previous_tag_name="$PREVIOUS_TAG" \
+              --jq '.body')
+          else
+            NOTES="- Initial release"
+          fi
+
+          {
+            echo "## [${VERSION}] - ${DATE}"
+            echo ""
+            echo "$NOTES"
+            echo ""
+          } > /tmp/changelog-entry.md
+
+      - name: Update changelog
+        run: |
+          {
+            head -n 4 CHANGELOG.md
+            cat /tmp/changelog-entry.md
+            echo ""
+            tail -n +5 CHANGELOG.md
+          } > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
+
+      - name: Create release PR
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          branch: release/v${{ steps.version.outputs.new }}
+          commit-message: "release: v${{ steps.version.outputs.new }}"
+          title: "release: v${{ steps.version.outputs.new }}"
+          body: "Bumps version from ${{ steps.version.outputs.current }} to ${{ steps.version.outputs.new }}."
+          labels: release
+
+  publish:
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Get version and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG="v${VERSION}"
+
+          # Extract changelog entry for this version
+          NOTES=$(sed -n "/^## \[${VERSION}\]/,/^## \[/{ /^## \[${VERSION}\]/p; /^## \[${VERSION}\]/!{ /^## \[/!p; } }" CHANGELOG.md)
+
+          # Tag and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          # Publish to crates.io
+          cargo publish
+
+          # Create GitHub release with changelog as notes
+          echo "$NOTES" > /tmp/release-notes.md
+          gh release create "$TAG" \
+            --title "v${VERSION}" \
+            --notes-file /tmp/release-notes.md
