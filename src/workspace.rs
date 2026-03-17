@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub struct WorkspaceInfo {
     pub root_path: PathBuf,
-    pub workspace_deps: HashMap<String, WorkspaceDep>,
+    pub workspace_deps: BTreeMap<String, WorkspaceDep>,
     pub members: Vec<MemberCrate>,
 }
 
@@ -97,8 +97,8 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     })
 }
 
-fn parse_workspace_deps(workspace_table: &toml::Table) -> HashMap<String, WorkspaceDep> {
-    let mut deps = HashMap::new();
+fn parse_workspace_deps(workspace_table: &toml::Table) -> BTreeMap<String, WorkspaceDep> {
+    let mut deps = BTreeMap::new();
     if let Some(dep_table) = workspace_table
         .get("dependencies")
         .and_then(|v| v.as_table())
@@ -135,8 +135,16 @@ fn expand_members(
         }
     }
     if !excludes.is_empty() {
-        let exclude_paths: Vec<PathBuf> = excludes.iter().map(|e| root.join(e)).collect();
-        paths.retain(|p| !exclude_paths.iter().any(|ex| p.starts_with(ex) || p == ex));
+        let mut excluded_paths = Vec::new();
+        for pattern in excludes {
+            let full_pattern = root.join(pattern).to_string_lossy().to_string();
+            if let Ok(matches) = glob::glob(&full_pattern) {
+                for entry in matches.flatten() {
+                    excluded_paths.push(entry);
+                }
+            }
+        }
+        paths.retain(|p| !excluded_paths.iter().any(|ex| p.starts_with(ex)));
     }
     paths.sort();
     Ok(paths)
@@ -177,7 +185,10 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     }
 
     Ok(MemberCrate {
-        path: manifest_path.parent().unwrap().to_path_buf(),
+        path: manifest_path
+            .parent()
+            .expect("manifest path should have a parent directory")
+            .to_path_buf(),
         manifest_path: manifest_path.to_path_buf(),
         dependencies,
     })

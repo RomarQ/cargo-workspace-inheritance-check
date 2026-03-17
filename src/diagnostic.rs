@@ -129,7 +129,7 @@ impl DiagnosticReport {
     }
 
     pub fn format_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        serde_json::to_string_pretty(self).expect("DiagnosticReport is always serializable")
     }
 }
 

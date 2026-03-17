@@ -1,7 +1,5 @@
 # Check Dependency Inheritance in Cargo Workspaces
 
-> `cargo install cargo-workspace-inheritance-check`
-
 A Cargo subcommand that enforces dependency inheritance hygiene in Cargo workspaces. It detects crates that specify dependency versions directly instead of using [`workspace = true`](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), flags version mismatches, and suggests candidates for workspace promotion.
 
 ## Why?

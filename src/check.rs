@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::diagnostic::{CheckKind, Diagnostic, Severity};
 use crate::workspace::WorkspaceInfo;
@@ -68,7 +68,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
     }
 
     // Check 3: promotion candidates
-    let mut dep_usage: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+    let mut dep_usage: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
     for member in &workspace.members {
         let member_rel = member
             .manifest_path
@@ -102,7 +102,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
             }
             let suggested_version = version_counts
                 .into_iter()
-                .max_by_key(|(_, count)| *count)
+                .max_by(|(v1, c1), (v2, c2)| c1.cmp(c2).then_with(|| v1.cmp(v2)))
                 .map(|(v, _)| v.to_string());
 
             diagnostics.push(Diagnostic {

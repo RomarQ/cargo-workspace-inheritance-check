@@ -1,11 +1,14 @@
-mod check;
-mod diagnostic;
-mod workspace;
-
-use clap::Parser;
+use cargo_workspace_inheritance_check::{check, diagnostic, workspace};
+use clap::{Parser, ValueEnum};
 use diagnostic::DiagnosticReport;
 use std::path::PathBuf;
 use std::process;
+
+#[derive(Debug, Clone, ValueEnum)]
+enum OutputFormat {
+    Human,
+    Json,
+}
 
 #[derive(Parser)]
 #[command(name = "cargo-workspace-inheritance-check")]
@@ -23,9 +26,9 @@ struct Cli {
     #[arg(long)]
     promotion_failure: bool,
 
-    /// Output format: human, json
-    #[arg(long, default_value = "human")]
-    format: String,
+    /// Output format
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
 
     /// Exit 0 even on errors
     #[arg(long)]
@@ -33,7 +36,11 @@ struct Cli {
 
     // Support `cargo workspace-inheritance-check` invocation where cargo
     // passes the subcommand name as the first argument.
-    #[arg(hide = true, required = false)]
+    #[arg(
+        hide = true,
+        required = false,
+        value_parser = clap::builder::PossibleValuesParser::new(["workspace-inheritance-check"])
+    )]
     _subcommand: Option<String>,
 }
 
@@ -61,9 +68,9 @@ fn main() {
 
     let report = DiagnosticReport::new(diagnostics);
 
-    match cli.format.as_str() {
-        "json" => println!("{}", report.format_json()),
-        _ => {
+    match cli.format {
+        OutputFormat::Json => println!("{}", report.format_json()),
+        OutputFormat::Human => {
             let output = report.format_human();
             if !output.is_empty() {
                 println!("{output}");
