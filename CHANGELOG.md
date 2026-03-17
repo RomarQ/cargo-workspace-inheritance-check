@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [1.0.0] - 2026-03-17
 
+**Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v0.2.0...v1.0.0
+
+
+## [1.0.0] - 2026-03-17
+
 ### Added
 
 - GitHub Action for CI integration (`uses: RomarQ/cargo-workspace-inheritance-check@v1`)
