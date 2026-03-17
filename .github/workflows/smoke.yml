@@ -1,0 +1,43 @@
+name: Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Clean workspace (should pass)
+        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        with:
+          path: tests/fixtures/valid_workspace
+
+      - name: Not inherited (should fail)
+        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        with:
+          path: tests/fixtures/not_inherited
+          no-fail: true
+
+      - name: Version mismatch (should fail)
+        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        with:
+          path: tests/fixtures/version_mismatch
+          no-fail: true
+
+      - name: Promotion candidate (should warn)
+        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        with:
+          path: tests/fixtures/promotion_candidate
+
+      - name: JSON output
+        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        with:
+          path: tests/fixtures/not_inherited
+          format: json
+          no-fail: true

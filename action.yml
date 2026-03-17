@@ -1,0 +1,62 @@
+name: "Cargo Workspace Inheritance Check"
+description: "Check and enforce workspace dependency inheritance in Cargo workspaces"
+author: "Rodrigo Quelhas"
+
+branding:
+  icon: "check-circle"
+  color: "orange"
+
+inputs:
+  path:
+    description: "Path to the workspace root"
+    required: false
+    default: "."
+  promotion-threshold:
+    description: "Minimum crate count before suggesting workspace promotion"
+    required: false
+    default: "2"
+  promotion-failure:
+    description: "Treat promotion candidates as errors"
+    required: false
+    default: "false"
+  format:
+    description: "Output format: human or json"
+    required: false
+    default: "human"
+  no-fail:
+    description: "Exit 0 even when errors are found"
+    required: false
+    default: "false"
+  version:
+    description: "Version of cargo-workspace-inheritance-check to install"
+    required: false
+    default: "latest"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install cargo-workspace-inheritance-check
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          cargo install cargo-workspace-inheritance-check
+        else
+          cargo install cargo-workspace-inheritance-check --version "${{ inputs.version }}"
+        fi
+
+    - name: Run cargo-workspace-inheritance-check
+      shell: bash
+      run: |
+        ARGS="--path ${{ inputs.path }}"
+        ARGS="$ARGS --promotion-threshold ${{ inputs.promotion-threshold }}"
+        ARGS="$ARGS --format ${{ inputs.format }}"
+
+        if [ "${{ inputs.promotion-failure }}" = "true" ]; then
+          ARGS="$ARGS --promotion-failure"
+        fi
+
+        if [ "${{ inputs.no-fail }}" = "true" ]; then
+          ARGS="$ARGS --no-fail"
+        fi
+
+        cargo workspace-inheritance-check $ARGS

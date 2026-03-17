@@ -140,18 +140,34 @@ Use `--format json` for machine-readable output, useful for integrating with oth
 ### GitHub Actions
 
 ```yaml
-- name: Install cargo-workspace-inheritance-check
-  run: cargo install cargo-workspace-inheritance-check
-
-- name: Check workspace dependency inheritance
-  run: cargo workspace-inheritance-check
+- uses: RomarQ/cargo-workspace-inheritance-check@v1
 ```
 
-To also enforce that shared dependencies are promoted to workspace level:
+With options:
 
 ```yaml
-- name: Check workspace dependency inheritance (strict)
-  run: cargo workspace-inheritance-check --promotion-failure
+- uses: RomarQ/cargo-workspace-inheritance-check@v1
+  with:
+    promotion-failure: true
+    promotion-threshold: 3
+```
+
+All inputs are optional:
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `path` | Path to the workspace root | `.` |
+| `promotion-threshold` | Min crate count for promotion warning | `2` |
+| `promotion-failure` | Treat promotion candidates as errors | `false` |
+| `format` | Output format: `human` or `json` | `human` |
+| `no-fail` | Exit 0 even when errors are found | `false` |
+| `version` | Version to install | `latest` |
+
+### Without the action
+
+```yaml
+- run: cargo install cargo-workspace-inheritance-check
+- run: cargo workspace-inheritance-check
 ```
 
 ## Dependency Sections Checked

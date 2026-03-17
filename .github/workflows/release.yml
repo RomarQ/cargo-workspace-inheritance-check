@@ -127,6 +127,11 @@ jobs:
           git tag "$TAG"
           git push origin "$TAG"
 
+          # Update major version tag (e.g., v1) for action consumers
+          MAJOR_TAG="v$(echo "$VERSION" | cut -d. -f1)"
+          git tag -f "$MAJOR_TAG"
+          git push origin "$MAJOR_TAG" -f
+
           # Publish to crates.io
           cargo publish
 
