@@ -6,22 +6,10 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v0.2.0...v1.0.0
 
-
-## [1.0.0] - 2026-03-17
-
 ### Added
 
 - GitHub Action for CI integration (`uses: RomarQ/cargo-workspace-inheritance-check@v1`)
 - CI workflow with smoke tests
-- Automated release process with changelog generation
-
-### Changed
-
-- Deterministic diagnostic ordering with `BTreeMap`
-- Deterministic tie-breaking for promotion version suggestion
-- Validate `--format` flag with `ValueEnum`
-- Support glob patterns in `workspace.exclude`
-- Use library crate in main.rs instead of re-declaring modules
 
 ## [0.2.0] - 2026-03-17
 
