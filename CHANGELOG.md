@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `--fix` flag to automatically fix all reported problems:
+  - **Not inherited / version mismatch**: replaces explicit versions with `{ workspace = true }` in member crates
+  - **Promotion candidates**: adds the dependency to `[workspace.dependencies]` and updates all member crates
+  - Preserves other dependency attributes (e.g. `features`, `optional`)
+  - Handles all dependency sections including target-specific dependencies
+- `fix` input for the GitHub Action
+
 ## [1.0.0] - 2026-03-17
 
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v0.2.0...v1.0.0

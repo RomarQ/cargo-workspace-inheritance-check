@@ -1,6 +1,6 @@
 # Check Dependency Inheritance in Cargo Workspaces
 
-A Cargo subcommand that detects workspace dependency inheritance issues in Cargo workspaces. It finds crates that specify dependency versions directly instead of using [`workspace = true`](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), flags version mismatches, and suggests candidates for workspace promotion.
+A Cargo subcommand that detects and fixes workspace dependency inheritance issues in Cargo workspaces. It finds crates that specify dependency versions directly instead of using [`workspace = true`](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), flags version mismatches, suggests candidates for workspace promotion, and can automatically fix all reported problems.
 
 ## Why?
 
@@ -67,6 +67,7 @@ cargo workspace-inheritance-check
 | `--promotion-failure` | Promote promotion candidate warnings to errors, causing the tool to exit with code 1 when candidates are found. Useful in CI when you want to enforce that all shared dependencies are declared in `[workspace.dependencies]`. | `false` |
 | `--format <FORMAT>` | Output format: `human` or `json` | `human` |
 | `--no-fail` | Always exit with code 0, regardless of errors found. Useful when you want to see the report without failing a CI pipeline. | `false` |
+| `--fix` | Automatically fix all reported problems. For not-inherited and version-mismatch errors, replaces explicit versions with `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates all member crates. Other dependency attributes (e.g. `features`, `optional`) are preserved. | `false` |
 
 ### Examples
 
@@ -85,6 +86,9 @@ cargo workspace-inheritance-check --format json
 
 # Report issues without failing
 cargo workspace-inheritance-check --no-fail
+
+# Automatically fix all reported problems
+cargo workspace-inheritance-check --fix
 ```
 
 ## Exit Codes
@@ -161,6 +165,7 @@ All inputs are optional:
 | `promotion-failure` | Treat promotion candidates as errors | `false` |
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
+| `fix` | Automatically fix reported problems | `false` |
 | `version` | Version to install | `latest` |
 
 ### Without the action
