@@ -78,14 +78,14 @@ pub(crate) fn for_each_dep_table_mut(
     if let Some(target_table) = doc.get_mut("target").and_then(|v| v.as_table_mut()) {
         let target_keys: Vec<String> = target_table.iter().map(|(k, _)| k.to_string()).collect();
         for target_key in target_keys {
-            if let Some(target_tbl) =
-                target_table
-                    .get_mut(&target_key)
-                    .and_then(|v| v.as_table_mut())
+            if let Some(target_tbl) = target_table
+                .get_mut(&target_key)
+                .and_then(|v| v.as_table_mut())
             {
                 for section in &DEP_SECTIONS {
-                    if let Some(dep_table) =
-                        target_tbl.get_mut(section).and_then(|v| v.as_table_like_mut())
+                    if let Some(dep_table) = target_tbl
+                        .get_mut(section)
+                        .and_then(|v| v.as_table_like_mut())
                     {
                         f(dep_table);
                     }

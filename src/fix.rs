@@ -4,7 +4,9 @@ use std::path::Path;
 use toml_edit::{InlineTable, Item, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind};
-use crate::workspace::{for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest};
+use crate::workspace::{
+    for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest,
+};
 
 pub struct FixSummary {
     pub fixes_applied: usize,

@@ -43,7 +43,9 @@ pub enum DiagnosticKind {
 impl Diagnostic {
     pub fn format_human(&self) -> String {
         match &self.kind {
-            DiagnosticKind::NotInherited { version, member, .. } => {
+            DiagnosticKind::NotInherited {
+                version, member, ..
+            } => {
                 let ver = version.as_deref().unwrap_or("?");
                 format!(
                     "error: `{dep} = \"{ver}\"` in {member} should use `{dep} = {{ workspace = true }}`",

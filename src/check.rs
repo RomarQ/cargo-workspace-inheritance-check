@@ -103,10 +103,7 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "serde");
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::NotInherited { .. }
-        ));
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 
     #[test]
@@ -171,9 +168,6 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "winapi");
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::NotInherited { .. }
-        ));
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 }
