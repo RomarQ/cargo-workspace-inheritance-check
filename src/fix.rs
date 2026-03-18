@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use toml_edit::{DocumentMut, InlineTable, Item, Value};
+use toml_edit::{InlineTable, Item, Value};
 
 use crate::diagnostic::{CheckKind, Diagnostic};
-use crate::workspace::DEP_SECTIONS;
+use crate::workspace::{DEP_SECTIONS, for_each_dep_table, item_as_table_like, read_manifest};
 
 pub struct FixSummary {
     pub fixes_applied: usize,
@@ -94,15 +94,9 @@ fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<Stri
     }
     // Scan for renamed packages: `alias = { package = "dep_name", ... }`
     for (key, item) in table.iter() {
-        let package_name = item
-            .as_inline_table()
+        let package_name = item_as_table_like(item)
             .and_then(|t| t.get("package"))
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                item.as_table()
-                    .and_then(|t| t.get("package"))
-                    .and_then(|v| v.as_str())
-            });
+            .and_then(|v| v.as_str());
         if package_name == Some(dep_name) {
             return Some(key.to_string());
         }
@@ -111,11 +105,7 @@ fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<Stri
 }
 
 fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> {
-    let content = std::fs::read_to_string(manifest_path)
-        .map_err(|e| format!("Failed to read {}: {e}", manifest_path.display()))?;
-    let mut doc: DocumentMut = content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", manifest_path.display()))?;
+    let mut doc = read_manifest(manifest_path)?;
 
     let mut modified = false;
 
@@ -218,35 +208,18 @@ fn any_member_disables_default_features(
 ) -> bool {
     for member_path in members {
         let full_path = workspace_root.join(member_path);
-        let Ok(content) = std::fs::read_to_string(&full_path) else {
-            continue;
-        };
-        let Ok(doc) = content.parse::<DocumentMut>() else {
+        let Ok(doc) = read_manifest(&full_path) else {
             continue;
         };
 
-        for section in &DEP_SECTIONS {
-            let Some(table) = doc.get(section).and_then(|v| v.as_table()) else {
-                continue;
-            };
+        let mut found = false;
+        for_each_dep_table(&doc, |table| {
             if has_default_features_false(table, dep_name) {
-                return true;
+                found = true;
             }
-        }
-
-        // Also check target-specific deps
-        if let Some(target_table) = doc.get("target").and_then(|v| v.as_table()) {
-            for (_, target_value) in target_table.iter() {
-                if let Some(target_tbl) = target_value.as_table() {
-                    for section in &DEP_SECTIONS {
-                        if let Some(dep_table) = target_tbl.get(section).and_then(|v| v.as_table())
-                            && has_default_features_false(dep_table, dep_name)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
+        });
+        if found {
+            return true;
         }
     }
 
@@ -260,14 +233,9 @@ fn has_default_features_false(table: &dyn toml_edit::TableLike, dep_name: &str) 
     let Some(item) = table.get(&key) else {
         return false;
     };
-    item.as_inline_table()
+    item_as_table_like(item)
         .and_then(|t| t.get("default-features"))
         .and_then(|v| v.as_bool())
-        .or_else(|| {
-            item.as_table()
-                .and_then(|t| t.get("default-features"))
-                .and_then(|v| v.as_bool())
-        })
         == Some(false)
 }
 
@@ -277,11 +245,7 @@ fn add_workspace_dep(
     version: &str,
     default_features: bool,
 ) -> Result<(), String> {
-    let content = std::fs::read_to_string(root_toml_path)
-        .map_err(|e| format!("Failed to read {}: {e}", root_toml_path.display()))?;
-    let mut doc: DocumentMut = content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", root_toml_path.display()))?;
+    let mut doc = read_manifest(root_toml_path)?;
 
     let workspace = doc
         .get_mut("workspace")

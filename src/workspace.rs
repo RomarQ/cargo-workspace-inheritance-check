@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, Item};
 
 pub struct WorkspaceInfo {
     pub root_path: PathBuf,
@@ -28,13 +28,46 @@ pub struct MemberDep {
 pub(crate) const DEP_SECTIONS: [&str; 3] =
     ["dependencies", "dev-dependencies", "build-dependencies"];
 
+pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    content
+        .parse()
+        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))
+}
+
+pub(crate) fn item_as_table_like(item: &Item) -> Option<&dyn toml_edit::TableLike> {
+    item.as_table()
+        .map(|t| t as &dyn toml_edit::TableLike)
+        .or_else(|| {
+            item.as_inline_table()
+                .map(|t| t as &dyn toml_edit::TableLike)
+        })
+}
+
+/// Invoke `f` for every dependency table in a document (top-level + target-specific).
+pub(crate) fn for_each_dep_table(doc: &DocumentMut, mut f: impl FnMut(&toml_edit::Table)) {
+    for section in &DEP_SECTIONS {
+        if let Some(table) = doc.get(section).and_then(|v| v.as_table()) {
+            f(table);
+        }
+    }
+    if let Some(target_table) = doc.get("target").and_then(|v| v.as_table()) {
+        for (_, target_value) in target_table {
+            if let Some(target_tbl) = target_value.as_table() {
+                for section in &DEP_SECTIONS {
+                    if let Some(dep_table) = target_tbl.get(section).and_then(|v| v.as_table()) {
+                        f(dep_table);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
-    let content = std::fs::read_to_string(&root_toml_path)
-        .map_err(|e| format!("Failed to read {}: {e}", root_toml_path.display()))?;
-    let doc: DocumentMut = content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", root_toml_path.display()))?;
+    let doc = read_manifest(&root_toml_path)?;
 
     let workspace_table = doc
         .get("workspace")
@@ -90,21 +123,12 @@ fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, 
         return deps;
     };
     for (name, item) in dep_table {
-        let version = item
-            .as_str()
-            .map(String::from)
-            .or_else(|| {
-                item.as_table()
-                    .and_then(|t| t.get("version"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            })
-            .or_else(|| {
-                item.as_inline_table()
-                    .and_then(|t| t.get("version"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            });
+        let version = item.as_str().map(String::from).or_else(|| {
+            item_as_table_like(item)
+                .and_then(|t| t.get("version"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         deps.insert(name.to_string(), WorkspaceDep { version });
     }
     deps
@@ -122,9 +146,7 @@ fn expand_members(
             .map_err(|e| format!("Invalid glob pattern '{pattern}': {e}"))?;
         for entry in matches {
             let entry = entry.map_err(|e| format!("Glob error: {e}"))?;
-            if entry.join("Cargo.toml").exists() {
-                paths.push(entry);
-            }
+            paths.push(entry);
         }
     }
     if !excludes.is_empty() {
@@ -144,32 +166,10 @@ fn expand_members(
 }
 
 fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
-    let content = std::fs::read_to_string(manifest_path)
-        .map_err(|e| format!("Failed to read {}: {e}", manifest_path.display()))?;
-    let doc: DocumentMut = content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", manifest_path.display()))?;
+    let doc = read_manifest(manifest_path)?;
 
     let mut dependencies = Vec::new();
-
-    for section in &DEP_SECTIONS {
-        if let Some(table) = doc.get(section).and_then(|v| v.as_table()) {
-            parse_dep_table(table, &mut dependencies);
-        }
-    }
-
-    // Also check target-specific deps
-    if let Some(target_table) = doc.get("target").and_then(|v| v.as_table()) {
-        for (_target_cfg, target_value) in target_table {
-            if let Some(target_tbl) = target_value.as_table() {
-                for section in &DEP_SECTIONS {
-                    if let Some(dep_table) = target_tbl.get(section).and_then(|v| v.as_table()) {
-                        parse_dep_table(dep_table, &mut dependencies);
-                    }
-                }
-            }
-        }
-    }
+    for_each_dep_table(&doc, |table| parse_dep_table(table, &mut dependencies));
 
     Ok(MemberCrate {
         manifest_path: manifest_path.to_path_buf(),
@@ -181,14 +181,7 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
     for (key, item) in table {
         let (version, workspace, package) = if let Some(s) = item.as_str() {
             (Some(s.to_string()), false, None)
-        } else if let Some(t) = item
-            .as_table()
-            .map(|t| t as &dyn toml_edit::TableLike)
-            .or_else(|| {
-                item.as_inline_table()
-                    .map(|t| t as &dyn toml_edit::TableLike)
-            })
-        {
+        } else if let Some(t) = item_as_table_like(item) {
             let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
             let workspace = t
                 .get("workspace")
@@ -219,12 +212,7 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name)
-    }
+    use crate::fixture;
 
     #[test]
     fn test_parse_valid_workspace() {
