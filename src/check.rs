@@ -5,8 +5,8 @@ use crate::workspace::WorkspaceInfo;
 
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    let mut dep_usage: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
 
-    // Checks 1 & 2: not-inherited and version-mismatch
     for member in &workspace.members {
         let member_rel = member
             .manifest_path
@@ -23,72 +23,28 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
 
             if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
-                if let (Some(dep_ver), Some(ws_ver)) = (&dep.version, &ws_dep.version) {
-                    if dep_ver == ws_ver {
-                        diagnostics.push(Diagnostic {
-                            severity: Severity::Error,
-                            check: CheckKind::NotInherited,
-                            dependency: lookup_name.to_string(),
-                            version: Some(dep_ver.clone()),
-                            member: Some(member_rel.clone()),
-                            workspace_version: Some(ws_ver.clone()),
-                            count: None,
-                            members: None,
-                            suggested_version: None,
-                        });
-                    } else {
-                        diagnostics.push(Diagnostic {
-                            severity: Severity::Error,
-                            check: CheckKind::VersionMismatch,
-                            dependency: lookup_name.to_string(),
-                            version: Some(dep_ver.clone()),
-                            member: Some(member_rel.clone()),
-                            workspace_version: Some(ws_ver.clone()),
-                            count: None,
-                            members: None,
-                            suggested_version: None,
-                        });
-                    }
-                } else {
-                    // Workspace dep has no version but member should still inherit
-                    diagnostics.push(Diagnostic {
-                        severity: Severity::Error,
-                        check: CheckKind::NotInherited,
-                        dependency: lookup_name.to_string(),
-                        version: dep.version.clone(),
-                        member: Some(member_rel.clone()),
-                        workspace_version: None,
-                        count: None,
-                        members: None,
-                        suggested_version: None,
-                    });
-                }
+                let check = match (&dep.version, &ws_dep.version) {
+                    (Some(dep_ver), Some(ws_ver)) if dep_ver == ws_ver => CheckKind::NotInherited,
+                    (Some(_), Some(_)) => CheckKind::VersionMismatch,
+                    _ => CheckKind::NotInherited,
+                };
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    check,
+                    dependency: lookup_name.to_string(),
+                    version: dep.version.clone(),
+                    member: Some(member_rel.clone()),
+                    workspace_version: ws_dep.version.clone(),
+                    count: None,
+                    members: None,
+                    suggested_version: None,
+                });
+            } else {
+                dep_usage
+                    .entry(lookup_name.to_string())
+                    .or_default()
+                    .push((member_rel.clone(), dep.version.clone()));
             }
-        }
-    }
-
-    // Check 3: promotion candidates
-    let mut dep_usage: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
-    for member in &workspace.members {
-        let member_rel = member
-            .manifest_path
-            .strip_prefix(&workspace.root_path)
-            .unwrap_or(&member.manifest_path)
-            .to_string_lossy()
-            .to_string();
-
-        for dep in &member.dependencies {
-            if dep.workspace {
-                continue;
-            }
-            let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
-            if workspace.workspace_deps.contains_key(lookup_name) {
-                continue;
-            }
-            dep_usage
-                .entry(lookup_name.to_string())
-                .or_default()
-                .push((member_rel.clone(), dep.version.clone()));
         }
     }
 
@@ -125,14 +81,8 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture;
     use crate::workspace::parse_workspace;
-    use std::path::PathBuf;
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name)
-    }
 
     #[test]
     fn test_valid_workspace_no_diagnostics() {

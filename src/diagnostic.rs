@@ -95,14 +95,13 @@ pub struct Summary {
 
 impl DiagnosticReport {
     pub fn new(diagnostics: Vec<Diagnostic>) -> Self {
-        let errors = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .count();
-        let warnings = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Warning)
-            .count();
+        let (mut errors, mut warnings) = (0, 0);
+        for d in &diagnostics {
+            match d.severity {
+                Severity::Error => errors += 1,
+                Severity::Warning => warnings += 1,
+            }
+        }
         Self {
             diagnostics,
             summary: Summary { errors, warnings },
