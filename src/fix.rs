@@ -486,41 +486,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_promotion_preserves_default_features_false() {
-        let dep = "ed25519-dalek = { version = \"2.1\", default-features = false }";
-        let tmp = temp_workspace(
-            "serde = \"1.0\"",
-            &[
-                ("one", &format!("serde = {{ workspace = true }}\n{dep}")),
-                ("two", &format!("serde = {{ workspace = true }}\n{dep}")),
-            ],
-        );
-
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        // Workspace dep must have default-features = false
-        let root = read_toml(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("default-features = false"),
-            "workspace dep should have default-features = false, got:\n{root}"
-        );
-
-        // Members must NOT have default-features (workspace dep owns it)
-        for name in &["one", "two"] {
-            let member = read_toml(&tmp, &format!("crates/{name}/Cargo.toml"));
-            assert!(
-                !member.contains("default-features"),
-                "member {name} should not have default-features after fix, got:\n{member}"
-            );
-        }
-    }
-
-    #[test]
     fn test_fix_promotion_sets_default_features_false_when_any_member_disables() {
         let tmp = temp_workspace(
             "serde = \"1.0\"",
