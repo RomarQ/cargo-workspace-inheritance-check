@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-03-18
+
+## What's Changed
+* fix: default features promotion by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/9
+
+
+**Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.1.0...v1.1.1
+
+
 ## [Unreleased]
 
 ### Fixed
