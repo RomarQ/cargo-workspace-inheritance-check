@@ -23,6 +23,16 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
 
             if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
+                // If registries differ, the workspace dep doesn't apply —
+                // treat as an independent dep eligible for promotion.
+                if dep.registry != ws_dep.registry {
+                    dep_usage
+                        .entry(lookup_name.to_string())
+                        .or_default()
+                        .push((member_rel.clone(), dep.version.clone()));
+                    continue;
+                }
+
                 let kind = match (&dep.version, &ws_dep.version) {
                     (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
                         version: dep.version.clone(),
@@ -161,6 +171,60 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "winapi");
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
+    }
+
+    #[test]
+    fn test_registry_mismatch_not_flagged_as_not_inherited() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n\
+             [workspace.dependencies]\n\
+             serde = \"1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\n\
+             serde = { version = \"1.0\", registry = \"my-registry\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
+
+        let ws = parse_workspace(dir.path()).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert!(
+            diags.is_empty(),
+            "dep from different registry should not match workspace dep: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_same_registry_flagged_as_not_inherited() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n\
+             [workspace.dependencies]\n\
+             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\n\
+             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
+
+        let ws = parse_workspace(dir.path()).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1, "same registry should match: {diags:?}");
         assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 }
