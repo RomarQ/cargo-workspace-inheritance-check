@@ -112,10 +112,10 @@ fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> 
     let mut modified = false;
 
     for_each_dep_table_mut(&mut doc, |table| {
-        if let Some(key) = find_dep_key(table, dep_name) {
-            if rewrite_dep_entry(table, &key) {
-                modified = true;
-            }
+        if let Some(key) = find_dep_key(table, dep_name)
+            && rewrite_dep_entry(table, &key)
+        {
+            modified = true;
         }
     });
 
