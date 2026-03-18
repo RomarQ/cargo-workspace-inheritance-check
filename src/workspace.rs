@@ -28,7 +28,6 @@ pub struct MemberDep {
 pub(crate) const DEP_SECTIONS: [&str; 3] =
     ["dependencies", "dev-dependencies", "build-dependencies"];
 
-
 pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
