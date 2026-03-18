@@ -65,6 +65,36 @@ pub(crate) fn for_each_dep_table(doc: &DocumentMut, mut f: impl FnMut(&toml_edit
     }
 }
 
+/// Mutable variant of [`for_each_dep_table`].
+pub(crate) fn for_each_dep_table_mut(
+    doc: &mut DocumentMut,
+    mut f: impl FnMut(&mut dyn toml_edit::TableLike),
+) {
+    for section in &DEP_SECTIONS {
+        if let Some(table) = doc.get_mut(section).and_then(|v| v.as_table_like_mut()) {
+            f(table);
+        }
+    }
+    if let Some(target_table) = doc.get_mut("target").and_then(|v| v.as_table_mut()) {
+        let target_keys: Vec<String> = target_table.iter().map(|(k, _)| k.to_string()).collect();
+        for target_key in target_keys {
+            if let Some(target_tbl) =
+                target_table
+                    .get_mut(&target_key)
+                    .and_then(|v| v.as_table_mut())
+            {
+                for section in &DEP_SECTIONS {
+                    if let Some(dep_table) =
+                        target_tbl.get_mut(section).and_then(|v| v.as_table_like_mut())
+                    {
+                        f(dep_table);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
     let doc = read_manifest(&root_toml_path)?;

@@ -3,8 +3,8 @@ use std::path::Path;
 
 use toml_edit::{InlineTable, Item, Value};
 
-use crate::diagnostic::{CheckKind, Diagnostic};
-use crate::workspace::{DEP_SECTIONS, for_each_dep_table, item_as_table_like, read_manifest};
+use crate::diagnostic::{Diagnostic, DiagnosticKind};
+use crate::workspace::{for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest};
 
 pub struct FixSummary {
     pub fixes_applied: usize,
@@ -21,54 +21,58 @@ pub fn apply_fixes(
     let mut actions = Vec::new();
 
     for diag in diagnostics {
-        match &diag.check {
-            CheckKind::NotInherited | CheckKind::VersionMismatch => {
-                let member = diag.member.as_deref().unwrap_or("?");
+        match &diag.kind {
+            DiagnosticKind::NotInherited { member, .. }
+            | DiagnosticKind::VersionMismatch { member, .. } => {
                 let full_path = workspace_root.join(member);
                 if fix_member_dep(&full_path, &diag.dependency)? {
                     modified_files.insert(full_path);
                     fixes_applied += 1;
-                    let msg = match &diag.check {
-                        CheckKind::NotInherited => format!(
+                    let msg = match &diag.kind {
+                        DiagnosticKind::NotInherited { .. } => format!(
                             "fixed: `{}` in {} now uses workspace inheritance",
                             diag.dependency, member,
                         ),
-                        CheckKind::VersionMismatch => format!(
+                        DiagnosticKind::VersionMismatch {
+                            version,
+                            workspace_version,
+                            ..
+                        } => format!(
                             "fixed: `{}` in {} changed from {} to {} (workspace version)",
                             diag.dependency,
                             member,
-                            diag.version.as_deref().unwrap_or("?"),
-                            diag.workspace_version.as_deref().unwrap_or("?"),
+                            version.as_deref().unwrap_or("?"),
+                            workspace_version.as_deref().unwrap_or("?"),
                         ),
                         _ => unreachable!(),
                     };
                     actions.push(msg);
                 }
             }
-            CheckKind::PromotionCandidate => {
-                let Some(version) = &diag.suggested_version else {
+            DiagnosticKind::PromotionCandidate {
+                members,
+                suggested_version,
+                ..
+            } => {
+                let Some(version) = suggested_version else {
                     continue;
                 };
                 let root_toml = workspace_root.join("Cargo.toml");
-                let default_features = !diag.members.as_ref().is_some_and(|m| {
-                    any_member_disables_default_features(workspace_root, m, &diag.dependency)
-                });
+                let default_features = !any_member_disables_default_features(
+                    workspace_root,
+                    members,
+                    &diag.dependency,
+                );
                 add_workspace_dep(&root_toml, &diag.dependency, version, default_features)?;
                 modified_files.insert(root_toml);
 
-                if let Some(members) = &diag.members {
-                    for member_path in members {
-                        let full_path = workspace_root.join(member_path);
-                        fix_member_dep(&full_path, &diag.dependency)?;
-                        modified_files.insert(full_path);
-                    }
+                for member_path in members {
+                    let full_path = workspace_root.join(member_path);
+                    fix_member_dep(&full_path, &diag.dependency)?;
+                    modified_files.insert(full_path);
                 }
                 fixes_applied += 1;
-                let member_list = diag
-                    .members
-                    .as_ref()
-                    .map(|m| m.join(", "))
-                    .unwrap_or_default();
+                let member_list = members.join(", ");
                 actions.push(format!(
                     "fixed: `{} = \"{}\"` added to [workspace.dependencies], updated: {member_list}",
                     diag.dependency, version,
@@ -103,39 +107,15 @@ fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<Stri
 
 fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> {
     let mut doc = read_manifest(manifest_path)?;
-
     let mut modified = false;
 
-    for section in &DEP_SECTIONS {
-        if let Some(table) = doc.get_mut(section).and_then(|v| v.as_table_like_mut())
-            && let Some(key) = find_dep_key(table, dep_name)
-            && rewrite_dep_entry(table, &key)
-        {
-            modified = true;
-        }
-    }
-
-    // Target-specific dependencies
-    if let Some(target_item) = doc.get_mut("target")
-        && let Some(target_table) = target_item.as_table_mut()
-    {
-        let target_keys: Vec<String> = target_table.iter().map(|(k, _)| k.to_string()).collect();
-        for target_key in target_keys {
-            for section in &DEP_SECTIONS {
-                if let Some(dep_table) = target_table
-                    .get_mut(&target_key)
-                    .and_then(|v| v.as_table_like_mut())
-                    && let Some(dep_tbl) = dep_table
-                        .get_mut(section)
-                        .and_then(|v| v.as_table_like_mut())
-                    && let Some(key) = find_dep_key(dep_tbl, dep_name)
-                    && rewrite_dep_entry(dep_tbl, &key)
-                {
-                    modified = true;
-                }
+    for_each_dep_table_mut(&mut doc, |table| {
+        if let Some(key) = find_dep_key(table, dep_name) {
+            if rewrite_dep_entry(table, &key) {
+                modified = true;
             }
         }
-    }
+    });
 
     if modified {
         std::fs::write(manifest_path, doc.to_string())
@@ -224,13 +204,9 @@ fn any_member_disables_default_features(
 }
 
 fn has_default_features_false(table: &dyn toml_edit::TableLike, dep_name: &str) -> bool {
-    let Some(key) = find_dep_key(table, dep_name) else {
-        return false;
-    };
-    let Some(item) = table.get(&key) else {
-        return false;
-    };
-    item_as_table_like(item)
+    find_dep_key(table, dep_name)
+        .and_then(|key| table.get(&key))
+        .and_then(item_as_table_like)
         .and_then(|t| t.get("default-features"))
         .and_then(|v| v.as_bool())
         == Some(false)
@@ -385,7 +361,10 @@ mod tests {
         let ws = parse_workspace(tmp.path()).unwrap();
         let diags = check::run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
-        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::PromotionCandidate { .. }
+        ));
 
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 1);
@@ -517,7 +496,10 @@ mod tests {
         let ws = parse_workspace(tmp.path()).unwrap();
         let diags = check::run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
-        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::PromotionCandidate { .. }
+        ));
 
         apply_fixes(tmp.path(), &diags).unwrap();
 
