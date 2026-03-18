@@ -4,6 +4,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
 use crate::diagnostic::{CheckKind, Diagnostic};
+use crate::workspace::DEP_SECTIONS;
 
 pub struct FixSummary {
     pub fixes_applied: usize,
@@ -108,8 +109,6 @@ fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<Stri
     }
     None
 }
-
-const DEP_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
 fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> {
     let content = std::fs::read_to_string(manifest_path)
@@ -374,7 +373,7 @@ mod tests {
         tmp
     }
 
-    fn read_toml(tmp: &tempfile::TempDir, relative: &str) -> String {
+    fn read_file(tmp: &tempfile::TempDir, relative: &str) -> String {
         std::fs::read_to_string(tmp.path().join(relative)).unwrap()
     }
 
@@ -388,7 +387,7 @@ mod tests {
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 1);
 
-        let content = read_toml(&tmp, "crates/foo/Cargo.toml");
+        let content = read_file(&tmp, "crates/foo/Cargo.toml");
         assert!(content.contains("workspace = true"));
         assert!(!content.contains("serde = \"1.0\""));
 
@@ -411,7 +410,7 @@ mod tests {
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 1);
 
-        let content = read_toml(&tmp, "crates/bar/Cargo.toml");
+        let content = read_file(&tmp, "crates/bar/Cargo.toml");
         assert!(content.contains("workspace = true"));
         assert!(!content.contains("rand = \"0.7\""));
 
@@ -434,11 +433,11 @@ mod tests {
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 1);
 
-        let root_content = read_toml(&tmp, "Cargo.toml");
+        let root_content = read_file(&tmp, "Cargo.toml");
         assert!(root_content.contains("serde_yaml"));
 
         for name in &["one", "two"] {
-            let content = read_toml(&tmp, &format!("crates/{name}/Cargo.toml"));
+            let content = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
             assert!(content.contains("workspace = true"));
             assert!(!content.contains("serde_yaml = \"0.9\""));
         }
@@ -468,7 +467,7 @@ mod tests {
 
         apply_fixes(tmp.path(), &diags).unwrap();
 
-        let content = read_toml(&tmp, "crates/app/Cargo.toml");
+        let content = read_file(&tmp, "crates/app/Cargo.toml");
         assert!(content.contains("workspace = true"));
         assert!(content.contains("features"));
         assert!(!content.contains("serde = { version"));
@@ -512,14 +511,14 @@ mod tests {
         // Workspace dep must have default-features = false because at least one
         // member needs it. Without it, member `default-features = false` is
         // silently ignored (pre-2024) or a hard error (2024 edition).
-        let root = read_toml(&tmp, "Cargo.toml");
+        let root = read_file(&tmp, "Cargo.toml");
         assert!(
             root.contains("default-features = false"),
             "workspace dep should have default-features = false when any member disables it, got:\n{root}"
         );
 
         // Member that had default-features = false should have it stripped
-        let one = read_toml(&tmp, "crates/one/Cargo.toml");
+        let one = read_file(&tmp, "crates/one/Cargo.toml");
         assert!(
             !one.contains("default-features"),
             "member one should not have default-features after fix, got:\n{one}"
@@ -536,7 +535,7 @@ mod tests {
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 1);
 
-        let content = read_toml(&tmp, "crates/plat/Cargo.toml");
+        let content = read_file(&tmp, "crates/plat/Cargo.toml");
         assert!(
             content.contains("workspace = true"),
             "target-specific dep should use workspace inheritance, got:\n{content}"
@@ -565,14 +564,14 @@ mod tests {
 
         apply_fixes(tmp.path(), &diags).unwrap();
 
-        let root = read_toml(&tmp, "Cargo.toml");
+        let root = read_file(&tmp, "Cargo.toml");
         assert!(
             root.contains("default-features = false"),
             "workspace dep should have default-features = false from target deps, got:\n{root}"
         );
 
         for name in &["one", "two"] {
-            let member = read_toml(&tmp, &format!("crates/{name}/Cargo.toml"));
+            let member = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
             assert!(
                 !member.contains("default-features"),
                 "member {name} should not have default-features after fix, got:\n{member}"

@@ -12,8 +12,6 @@ pub struct WorkspaceDep {
 }
 
 pub struct MemberCrate {
-    #[allow(dead_code)]
-    pub path: PathBuf,
     pub manifest_path: PathBuf,
     pub dependencies: Vec<MemberDep>,
 }
@@ -23,26 +21,10 @@ pub struct MemberDep {
     pub package: Option<String>,
     pub version: Option<String>,
     pub workspace: bool,
-    #[allow(dead_code)]
-    pub section: DepSection,
 }
 
-#[derive(Debug, Clone)]
-pub enum DepSection {
-    Normal,
-    Dev,
-    Build,
-}
-
-impl std::fmt::Display for DepSection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DepSection::Normal => write!(f, "dependencies"),
-            DepSection::Dev => write!(f, "dev-dependencies"),
-            DepSection::Build => write!(f, "build-dependencies"),
-        }
-    }
-}
+pub(crate) const DEP_SECTIONS: [&str; 3] =
+    ["dependencies", "dev-dependencies", "build-dependencies"];
 
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
@@ -159,15 +141,9 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
 
     let mut dependencies = Vec::new();
 
-    let sections = [
-        ("dependencies", DepSection::Normal),
-        ("dev-dependencies", DepSection::Dev),
-        ("build-dependencies", DepSection::Build),
-    ];
-
-    for (key, section) in &sections {
-        if let Some(dep_table) = doc.get(*key).and_then(|v| v.as_table()) {
-            parse_dep_table(dep_table, section.clone(), &mut dependencies);
+    for section in &DEP_SECTIONS {
+        if let Some(dep_table) = doc.get(*section).and_then(|v| v.as_table()) {
+            parse_dep_table(dep_table, &mut dependencies);
         }
     }
 
@@ -175,9 +151,9 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     if let Some(target_table) = doc.get("target").and_then(|v| v.as_table()) {
         for (_target_cfg, target_value) in target_table {
             if let Some(target_tbl) = target_value.as_table() {
-                for (key, section) in &sections {
-                    if let Some(dep_table) = target_tbl.get(*key).and_then(|v| v.as_table()) {
-                        parse_dep_table(dep_table, section.clone(), &mut dependencies);
+                for section in &DEP_SECTIONS {
+                    if let Some(dep_table) = target_tbl.get(*section).and_then(|v| v.as_table()) {
+                        parse_dep_table(dep_table, &mut dependencies);
                     }
                 }
             }
@@ -185,16 +161,12 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     }
 
     Ok(MemberCrate {
-        path: manifest_path
-            .parent()
-            .expect("manifest path should have a parent directory")
-            .to_path_buf(),
         manifest_path: manifest_path.to_path_buf(),
         dependencies,
     })
 }
 
-fn parse_dep_table(table: &toml::Table, section: DepSection, deps: &mut Vec<MemberDep>) {
+fn parse_dep_table(table: &toml::Table, deps: &mut Vec<MemberDep>) {
     for (key, value) in table {
         let (version, workspace, package) = match value {
             toml::Value::String(s) => (Some(s.clone()), false, None),
@@ -224,7 +196,6 @@ fn parse_dep_table(table: &toml::Table, section: DepSection, deps: &mut Vec<Memb
             package,
             version,
             workspace,
-            section: section.clone(),
         });
     }
 }
