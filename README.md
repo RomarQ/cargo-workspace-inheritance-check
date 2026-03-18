@@ -67,7 +67,7 @@ cargo workspace-inheritance-check
 | `--promotion-failure` | Promote promotion candidate warnings to errors, causing the tool to exit with code 1 when candidates are found. Useful in CI when you want to enforce that all shared dependencies are declared in `[workspace.dependencies]`. | `false` |
 | `--format <FORMAT>` | Output format: `human` or `json` | `human` |
 | `--no-fail` | Always exit with code 0, regardless of errors found. Useful when you want to see the report without failing a CI pipeline. | `false` |
-| `--fix` | Automatically fix all reported problems. For not-inherited and version-mismatch errors, replaces explicit versions with `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates all member crates. Other dependency attributes (e.g. `features`, `optional`) are preserved. | `false` |
+| `--fix` | Automatically fix all reported problems. For not-inherited and version-mismatch errors, replaces explicit versions with `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates all member crates. Other dependency attributes (e.g. `features`, `optional`) are preserved. If any member sets `default-features = false`, the workspace dependency will too (required for correctness — Cargo ignores member-level `default-features = false` unless the workspace dependency also sets it, and the 2024 edition makes this a hard error). | `false` |
 
 ### Examples
 
