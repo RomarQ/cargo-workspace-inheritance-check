@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.1] - 2026-03-18
 
 ### Fixed
 
@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.1.0] - 2026-03-18
 
-## What's Changed
+### What's Changed
 
 - `--fix` flag to automatically fix all reported problems:
   - **Not inherited / version mismatch**: replaces explicit versions with `{ workspace = true }` in member crates
