@@ -52,7 +52,10 @@ pub fn apply_fixes(
                     continue;
                 };
                 let root_toml = workspace_root.join("Cargo.toml");
-                add_workspace_dep(&root_toml, &diag.dependency, version)?;
+                let default_features = !diag.members.as_ref().is_some_and(|m| {
+                    any_member_disables_default_features(workspace_root, m, &diag.dependency)
+                });
+                add_workspace_dep(&root_toml, &diag.dependency, version, default_features)?;
                 modified_files.insert(root_toml);
 
                 if let Some(members) = &diag.members {
@@ -198,7 +201,63 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
     }
 }
 
-fn add_workspace_dep(root_toml_path: &Path, dep_name: &str, version: &str) -> Result<(), String> {
+/// Check if any member usage of a dependency sets `default-features = false`.
+///
+/// Cargo ignores `default-features = false` in members unless the workspace dep
+/// also sets it. In the 2024 edition this mismatch is a hard error. So if any
+/// member needs `default-features = false`, the workspace dep must have it too.
+fn any_member_disables_default_features(
+    workspace_root: &Path,
+    members: &[String],
+    dep_name: &str,
+) -> bool {
+    let sections = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+    for member_path in members {
+        let full_path = workspace_root.join(member_path);
+        let Ok(content) = std::fs::read_to_string(&full_path) else {
+            continue;
+        };
+        let Ok(doc) = content.parse::<DocumentMut>() else {
+            continue;
+        };
+
+        for section in &sections {
+            let Some(table) = doc.get(section).and_then(|v| v.as_table()) else {
+                continue;
+            };
+            let Some(key) = find_dep_key(table, dep_name) else {
+                continue;
+            };
+            let Some(item) = table.get(&key) else {
+                continue;
+            };
+
+            let df = item
+                .as_inline_table()
+                .and_then(|t| t.get("default-features"))
+                .and_then(|v| v.as_bool())
+                .or_else(|| {
+                    item.as_table()
+                        .and_then(|t| t.get("default-features"))
+                        .and_then(|v| v.as_bool())
+                });
+
+            if df == Some(false) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn add_workspace_dep(
+    root_toml_path: &Path,
+    dep_name: &str,
+    version: &str,
+    default_features: bool,
+) -> Result<(), String> {
     let content = std::fs::read_to_string(root_toml_path)
         .map_err(|e| format!("Failed to read {}: {e}", root_toml_path.display()))?;
     let mut doc: DocumentMut = content
@@ -220,7 +279,14 @@ fn add_workspace_dep(root_toml_path: &Path, dep_name: &str, version: &str) -> Re
         .ok_or("Failed to access [workspace.dependencies]")?;
 
     if !ws_deps.contains_key(dep_name) {
-        ws_deps.insert(dep_name, toml_edit::value(version));
+        if default_features {
+            ws_deps.insert(dep_name, toml_edit::value(version));
+        } else {
+            let mut table = InlineTable::new();
+            table.insert("version", Value::from(version));
+            table.insert("default-features", Value::from(false));
+            ws_deps.insert(dep_name, Item::Value(Value::InlineTable(table)));
+        }
     }
 
     std::fs::write(root_toml_path, doc.to_string())
@@ -377,5 +443,89 @@ mod tests {
 
         let summary = apply_fixes(tmp.path(), &diags).unwrap();
         assert_eq!(summary.fixes_applied, 0);
+    }
+
+    #[test]
+    fn test_fix_promotion_preserves_default_features_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nserde = \"1.0\"\n",
+        )
+        .unwrap();
+
+        // Both members use default-features = false
+        for name in &["one", "two"] {
+            std::fs::create_dir_all(tmp.path().join(format!("crates/{name}/src"))).unwrap();
+            std::fs::write(
+                tmp.path().join(format!("crates/{name}/Cargo.toml")),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\nserde = {{ workspace = true }}\n\
+                     ed25519-dalek = {{ version = \"2.1\", default-features = false }}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+        }
+
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let root = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+        assert!(
+            root.contains("default-features = false"),
+            "workspace dep should have default-features = false, got:\n{root}"
+        );
+    }
+
+    #[test]
+    fn test_fix_promotion_sets_default_features_false_when_any_member_disables() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nserde = \"1.0\"\n",
+        )
+        .unwrap();
+
+        // One member disables default-features, the other doesn't
+        std::fs::create_dir_all(tmp.path().join("crates/one/src")).unwrap();
+        std::fs::write(
+            tmp.path().join("crates/one/Cargo.toml"),
+            "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nserde = { workspace = true }\n\
+             ed25519-dalek = { version = \"2.1\", default-features = false }\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("crates/one/src/lib.rs"), "").unwrap();
+
+        std::fs::create_dir_all(tmp.path().join("crates/two/src")).unwrap();
+        std::fs::write(
+            tmp.path().join("crates/two/Cargo.toml"),
+            "[package]\nname = \"two\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nserde = { workspace = true }\n\
+             ed25519-dalek = \"2.1\"\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("crates/two/src/lib.rs"), "").unwrap();
+
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        // Workspace dep must have default-features = false because at least one
+        // member needs it. Without it, member `default-features = false` is
+        // silently ignored (pre-2024) or a hard error (2024 edition).
+        let root = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+        assert!(
+            root.contains("default-features = false"),
+            "workspace dep should have default-features = false when any member disables it, got:\n{root}"
+        );
     }
 }

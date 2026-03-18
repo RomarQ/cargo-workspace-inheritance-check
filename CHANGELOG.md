@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `--fix` now propagates `default-features = false` to `[workspace.dependencies]` when promoting a dependency that any member uses with `default-features = false`. Without this, Cargo silently ignores the member-level setting (pre-2024 edition) or raises a hard error (2024 edition).
+
 ## [1.1.0] - 2026-03-18
 
 ## What's Changed
