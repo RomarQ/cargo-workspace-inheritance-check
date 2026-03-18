@@ -589,4 +589,29 @@ mod tests {
             "expected no diagnostics after fix, got: {diags2:?}"
         );
     }
+
+    #[test]
+    fn test_fix_promotion_with_target_specific_default_features() {
+        let tmp = copy_fixture("target_deps_promotion");
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let root = read_toml(&tmp, "Cargo.toml");
+        assert!(
+            root.contains("default-features = false"),
+            "workspace dep should have default-features = false from target deps, got:\n{root}"
+        );
+
+        for name in &["one", "two"] {
+            let member = read_toml(&tmp, &format!("crates/{name}/Cargo.toml"));
+            assert!(
+                !member.contains("default-features"),
+                "member {name} should not have default-features after fix, got:\n{member}"
+            );
+        }
+    }
 }
