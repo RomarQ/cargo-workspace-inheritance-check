@@ -1,4 +1,4 @@
-use cargo_workspace_inheritance_check::{check, diagnostic, workspace};
+use cargo_workspace_inheritance_check::{check, diagnostic, fix, workspace};
 use clap::{Parser, ValueEnum};
 use diagnostic::DiagnosticReport;
 use std::path::PathBuf;
@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long)]
     no_fail: bool,
 
+    /// Automatically fix reported problems
+    #[arg(long)]
+    fix: bool,
+
     // Support `cargo workspace-inheritance-check` invocation where cargo
     // passes the subcommand name as the first argument.
     #[arg(
@@ -64,6 +68,29 @@ fn main() {
                 d.severity = diagnostic::Severity::Error;
             }
         }
+    }
+
+    if cli.fix {
+        match fix::apply_fixes(&cli.path, &diagnostics) {
+            Ok(summary) => {
+                for action in &summary.actions {
+                    eprintln!("{action}");
+                }
+                if summary.fixes_applied > 0 {
+                    eprintln!(
+                        "\n{} fix(es) applied across {} file(s)",
+                        summary.fixes_applied, summary.files_modified,
+                    );
+                } else {
+                    eprintln!("no fixable issues found");
+                }
+            }
+            Err(e) => {
+                eprintln!("error applying fixes: {e}");
+                process::exit(1);
+            }
+        }
+        return;
     }
 
     let report = DiagnosticReport::new(diagnostics);
