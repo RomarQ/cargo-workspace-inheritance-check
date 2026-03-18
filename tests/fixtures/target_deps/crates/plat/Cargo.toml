@@ -1,0 +1,7 @@
+[package]
+name = "plat"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3"
