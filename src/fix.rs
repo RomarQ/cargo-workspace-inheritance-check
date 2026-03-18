@@ -368,8 +368,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "")
-                .unwrap();
+            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
         }
 
         tmp
@@ -457,7 +456,10 @@ mod tests {
     fn test_fix_preserves_features() {
         let tmp = temp_workspace(
             "serde = \"1.0\"",
-            &[("app", "serde = { version = \"1.0\", features = [\"derive\"] }")],
+            &[(
+                "app",
+                "serde = { version = \"1.0\", features = [\"derive\"] }",
+            )],
         );
 
         let ws = parse_workspace(tmp.path()).unwrap();
@@ -611,8 +613,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "")
-                .unwrap();
+            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
         }
 
         let ws = parse_workspace(tmp.path()).unwrap();
