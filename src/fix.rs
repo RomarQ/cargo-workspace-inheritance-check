@@ -52,12 +52,9 @@ pub fn apply_fixes(
                     continue;
                 };
                 let root_toml = workspace_root.join("Cargo.toml");
-                let default_features = !diag
-                    .members
-                    .as_ref()
-                    .is_some_and(|m| {
-                        any_member_disables_default_features(workspace_root, m, &diag.dependency)
-                    });
+                let default_features = !diag.members.as_ref().is_some_and(|m| {
+                    any_member_disables_default_features(workspace_root, m, &diag.dependency)
+                });
                 add_workspace_dep(&root_toml, &diag.dependency, version, default_features)?;
                 modified_files.insert(root_toml);
 
@@ -469,11 +466,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(
-                tmp.path().join(format!("crates/{name}/src/lib.rs")),
-                "",
-            )
-            .unwrap();
+            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
         }
 
         let ws = parse_workspace(tmp.path()).unwrap();
