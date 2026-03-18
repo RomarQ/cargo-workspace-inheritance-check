@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-03-18
+
+## What's Changed
+* feature(fix-arg): Add --fix argument by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/7
+
+## New Contributors
+* @RomarQ made their first contribution in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/7
+
+**Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.0.0...v1.1.0
+
+
 ## [Unreleased]
 
 ### Added
