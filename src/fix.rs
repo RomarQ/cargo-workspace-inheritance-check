@@ -82,9 +82,14 @@ pub fn apply_fixes(
                 }
                 fixes_applied += 1;
                 let member_list = members.join(", ");
+                let dep_value = if let Some(reg) = suggested_registry {
+                    format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
+                } else {
+                    format!("\"{version}\"")
+                };
                 actions.push(format!(
-                    "fixed: `{} = \"{}\"` added to [workspace.dependencies], updated: {member_list}",
-                    diag.dependency, version,
+                    "fixed: `{dep} = {dep_value}` added to [workspace.dependencies], updated: {member_list}",
+                    dep = diag.dependency,
                 ));
             }
         }
