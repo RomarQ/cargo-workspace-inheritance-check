@@ -181,8 +181,13 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
     for (key, item) in table {
         let (version, workspace, package) = if let Some(s) = item.as_str() {
             (Some(s.to_string()), false, None)
-        } else if let Some(t) = item.as_table().map(|t| t as &dyn toml_edit::TableLike)
-            .or_else(|| item.as_inline_table().map(|t| t as &dyn toml_edit::TableLike))
+        } else if let Some(t) = item
+            .as_table()
+            .map(|t| t as &dyn toml_edit::TableLike)
+            .or_else(|| {
+                item.as_inline_table()
+                    .map(|t| t as &dyn toml_edit::TableLike)
+            })
         {
             let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
             let workspace = t
