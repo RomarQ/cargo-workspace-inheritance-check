@@ -25,8 +25,7 @@ pub struct MemberDep {
     pub workspace: bool,
 }
 
-pub(crate) const DEP_SECTIONS: [&str; 3] =
-    ["dependencies", "dev-dependencies", "build-dependencies"];
+const DEP_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
 pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
     let content = std::fs::read_to_string(path)

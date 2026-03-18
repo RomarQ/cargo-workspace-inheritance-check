@@ -24,14 +24,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 
             if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
                 let kind = match (&dep.version, &ws_dep.version) {
-                    (Some(dep_ver), Some(ws_ver)) if dep_ver == ws_ver => {
-                        DiagnosticKind::NotInherited {
-                            version: dep.version.clone(),
-                            member: member_rel.clone(),
-                            workspace_version: ws_dep.version.clone(),
-                        }
-                    }
-                    (Some(_), Some(_)) => DiagnosticKind::VersionMismatch {
+                    (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
                         version: dep.version.clone(),
                         member: member_rel.clone(),
                         workspace_version: ws_dep.version.clone(),
