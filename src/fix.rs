@@ -22,30 +22,27 @@ pub fn apply_fixes(
 
     for diag in diagnostics {
         match &diag.check {
-            CheckKind::NotInherited => {
+            CheckKind::NotInherited | CheckKind::VersionMismatch => {
                 let member = diag.member.as_deref().unwrap_or("?");
                 let full_path = workspace_root.join(member);
                 if fix_member_dep(&full_path, &diag.dependency)? {
                     modified_files.insert(full_path);
                     fixes_applied += 1;
-                    actions.push(format!(
-                        "fixed: `{}` in {} now uses workspace inheritance",
-                        diag.dependency, member,
-                    ));
-                }
-            }
-            CheckKind::VersionMismatch => {
-                let member = diag.member.as_deref().unwrap_or("?");
-                let dep_ver = diag.version.as_deref().unwrap_or("?");
-                let ws_ver = diag.workspace_version.as_deref().unwrap_or("?");
-                let full_path = workspace_root.join(member);
-                if fix_member_dep(&full_path, &diag.dependency)? {
-                    modified_files.insert(full_path);
-                    fixes_applied += 1;
-                    actions.push(format!(
-                        "fixed: `{}` in {} changed from {} to {} (workspace version)",
-                        diag.dependency, member, dep_ver, ws_ver,
-                    ));
+                    let msg = match &diag.check {
+                        CheckKind::NotInherited => format!(
+                            "fixed: `{}` in {} now uses workspace inheritance",
+                            diag.dependency, member,
+                        ),
+                        CheckKind::VersionMismatch => format!(
+                            "fixed: `{}` in {} changed from {} to {} (workspace version)",
+                            diag.dependency,
+                            member,
+                            diag.version.as_deref().unwrap_or("?"),
+                            diag.workspace_version.as_deref().unwrap_or("?"),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    actions.push(msg);
                 }
             }
             CheckKind::PromotionCandidate => {
@@ -283,14 +280,10 @@ mod tests {
     use super::*;
     use crate::check;
     use crate::workspace::parse_workspace;
-    use std::path::PathBuf;
 
     fn copy_fixture(name: &str) -> tempfile::TempDir {
-        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name);
         let tmp = tempfile::tempdir().unwrap();
-        copy_dir_recursive(&fixture_dir, tmp.path());
+        copy_dir_recursive(&crate::fixture(name), tmp.path());
         tmp
     }
 

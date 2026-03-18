@@ -76,25 +76,8 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
 
     let workspace_deps = parse_workspace_deps(workspace_table);
 
-    let member_patterns: Vec<String> = workspace_table
-        .get("members")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let exclude_patterns: Vec<String> = workspace_table
-        .get("exclude")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let member_patterns = get_string_array(workspace_table, "members");
+    let exclude_patterns = get_string_array(workspace_table, "exclude");
 
     let member_paths = expand_members(path, &member_patterns, &exclude_patterns)?;
 
@@ -112,6 +95,18 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         workspace_deps,
         members,
     })
+}
+
+fn get_string_array(table: &toml_edit::Table, key: &str) -> Vec<String> {
+    table
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, WorkspaceDep> {
