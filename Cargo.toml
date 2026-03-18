@@ -8,7 +8,6 @@ license = "MIT"
 repository = "https://github.com/RomarQ/cargo-workspace-inheritance-check"
 
 [dependencies]
-toml = "0.8"
 toml_edit = "0.22"
 clap = { version = "4", features = ["derive"] }
 glob = "0.3"

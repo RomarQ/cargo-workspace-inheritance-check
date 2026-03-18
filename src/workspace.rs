@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use toml_edit::DocumentMut;
+
 pub struct WorkspaceInfo {
     pub root_path: PathBuf,
     pub workspace_deps: BTreeMap<String, WorkspaceDep>,
@@ -30,7 +32,7 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
     let content = std::fs::read_to_string(&root_toml_path)
         .map_err(|e| format!("Failed to read {}: {e}", root_toml_path.display()))?;
-    let doc: toml::Table = content
+    let doc: DocumentMut = content
         .parse()
         .map_err(|e| format!("Failed to parse {}: {e}", root_toml_path.display()))?;
 
@@ -79,22 +81,31 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     })
 }
 
-fn parse_workspace_deps(workspace_table: &toml::Table) -> BTreeMap<String, WorkspaceDep> {
+fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, WorkspaceDep> {
     let mut deps = BTreeMap::new();
-    if let Some(dep_table) = workspace_table
+    let Some(dep_table) = workspace_table
         .get("dependencies")
         .and_then(|v| v.as_table())
-    {
-        for (name, value) in dep_table {
-            let version = match value {
-                toml::Value::String(s) => Some(s.clone()),
-                toml::Value::Table(t) => {
-                    t.get("version").and_then(|v| v.as_str()).map(String::from)
-                }
-                _ => None,
-            };
-            deps.insert(name.clone(), WorkspaceDep { version });
-        }
+    else {
+        return deps;
+    };
+    for (name, item) in dep_table {
+        let version = item
+            .as_str()
+            .map(String::from)
+            .or_else(|| {
+                item.as_table()
+                    .and_then(|t| t.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                item.as_inline_table()
+                    .and_then(|t| t.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
+        deps.insert(name.to_string(), WorkspaceDep { version });
     }
     deps
 }
@@ -135,15 +146,15 @@ fn expand_members(
 fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     let content = std::fs::read_to_string(manifest_path)
         .map_err(|e| format!("Failed to read {}: {e}", manifest_path.display()))?;
-    let doc: toml::Table = content
+    let doc: DocumentMut = content
         .parse()
         .map_err(|e| format!("Failed to parse {}: {e}", manifest_path.display()))?;
 
     let mut dependencies = Vec::new();
 
     for section in &DEP_SECTIONS {
-        if let Some(dep_table) = doc.get(*section).and_then(|v| v.as_table()) {
-            parse_dep_table(dep_table, &mut dependencies);
+        if let Some(table) = doc.get(*section).and_then(|v| v.as_table()) {
+            parse_dep_table(table, &mut dependencies);
         }
     }
 
@@ -166,33 +177,33 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     })
 }
 
-fn parse_dep_table(table: &toml::Table, deps: &mut Vec<MemberDep>) {
-    for (key, value) in table {
-        let (version, workspace, package) = match value {
-            toml::Value::String(s) => (Some(s.clone()), false, None),
-            toml::Value::Table(t) => {
-                let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
-                let workspace = t
-                    .get("workspace")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let package = t.get("package").and_then(|v| v.as_str()).map(String::from);
-                (version, workspace, package)
+fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
+    for (key, item) in table {
+        let (version, workspace, package) = if let Some(s) = item.as_str() {
+            (Some(s.to_string()), false, None)
+        } else if let Some(t) = item.as_table().map(|t| t as &dyn toml_edit::TableLike)
+            .or_else(|| item.as_inline_table().map(|t| t as &dyn toml_edit::TableLike))
+        {
+            let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
+            let workspace = t
+                .get("workspace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let package = t.get("package").and_then(|v| v.as_str()).map(String::from);
+
+            // Skip pure path/git deps with no version
+            if !workspace && version.is_none() && (t.contains_key("path") || t.contains_key("git"))
+            {
+                continue;
             }
-            _ => continue,
+
+            (version, workspace, package)
+        } else {
+            continue;
         };
 
-        // Skip pure path/git deps with no version
-        if !workspace
-            && version.is_none()
-            && let toml::Value::Table(t) = value
-            && (t.contains_key("path") || t.contains_key("git"))
-        {
-            continue;
-        }
-
         deps.push(MemberDep {
-            name: key.clone(),
+            name: key.to_string(),
             package,
             version,
             workspace,
