@@ -4,15 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [1.1.2] - 2026-03-18
 
-## What's Changed
-* fix: strip default-features from members and scan target-specific deps by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/11
-
-
-**Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.1.1...v1.1.2
-
-
-## [Unreleased]
-
 ### Fixed
 
 - `--fix` now strips `default-features` from member entries when converting to `{ workspace = true }`, since it must be set at the workspace level to have any effect
