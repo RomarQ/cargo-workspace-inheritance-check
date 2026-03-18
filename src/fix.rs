@@ -54,6 +54,7 @@ pub fn apply_fixes(
             DiagnosticKind::PromotionCandidate {
                 members,
                 suggested_version,
+                suggested_registry,
                 ..
             } => {
                 let Some(version) = suggested_version else {
@@ -65,7 +66,13 @@ pub fn apply_fixes(
                     members,
                     &diag.dependency,
                 );
-                add_workspace_dep(&root_toml, &diag.dependency, version, default_features)?;
+                add_workspace_dep(
+                    &root_toml,
+                    &diag.dependency,
+                    version,
+                    default_features,
+                    suggested_registry.as_deref(),
+                )?;
                 modified_files.insert(root_toml);
 
                 for member_path in members {
@@ -221,6 +228,7 @@ fn add_workspace_dep(
     dep_name: &str,
     version: &str,
     default_features: bool,
+    registry: Option<&str>,
 ) -> Result<(), String> {
     let mut doc = read_manifest(root_toml_path)?;
 
@@ -239,12 +247,17 @@ fn add_workspace_dep(
         .ok_or("Failed to access [workspace.dependencies]")?;
 
     if !ws_deps.contains_key(dep_name) {
-        if default_features {
+        if default_features && registry.is_none() {
             ws_deps.insert(dep_name, toml_edit::value(version));
         } else {
             let mut table = InlineTable::new();
             table.insert("version", Value::from(version));
-            table.insert("default-features", Value::from(false));
+            if !default_features {
+                table.insert("default-features", Value::from(false));
+            }
+            if let Some(reg) = registry {
+                table.insert("registry", Value::from(reg));
+            }
             ws_deps.insert(dep_name, Item::Value(Value::InlineTable(table)));
         }
     }
@@ -516,6 +529,45 @@ mod tests {
             !content.contains("registry"),
             "registry should be stripped from member dep, got:\n{content}"
         );
+    }
+
+    #[test]
+    fn test_fix_promotion_carries_registry() {
+        let tmp = temp_workspace(
+            "",
+            &[
+                (
+                    "one",
+                    "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
+                ),
+                (
+                    "two",
+                    "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
+                ),
+            ],
+        );
+
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let root = read_file(&tmp, "Cargo.toml");
+        assert!(
+            root.contains("registry = \"my-registry\""),
+            "promoted workspace dep should include registry, got:\n{root}"
+        );
+
+        // Members should NOT have registry (workspace owns it)
+        for name in &["one", "two"] {
+            let content = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
+            assert!(content.contains("workspace = true"));
+            assert!(
+                !content.contains("registry"),
+                "member {name} should not have registry after fix, got:\n{content}"
+            );
+        }
     }
 
     #[test]
