@@ -143,6 +143,7 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
         }
         dep_table.remove("version");
         dep_table.remove("default-features");
+        dep_table.remove("registry");
         dep_table.insert("workspace", toml_edit::value(true));
         return true;
     }
@@ -164,7 +165,8 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
             let mut rebuilt = InlineTable::new();
             rebuilt.insert("workspace", Value::from(true));
             for (k, v) in existing.iter() {
-                if k != "version" && k != "workspace" && k != "default-features" {
+                if k != "version" && k != "workspace" && k != "default-features" && k != "registry"
+                {
                     rebuilt.insert(k, v.clone());
                 }
             }
@@ -489,6 +491,30 @@ mod tests {
         assert!(
             diags2.is_empty(),
             "expected no diagnostics after fix, got: {diags2:?}"
+        );
+    }
+
+    #[test]
+    fn test_fix_strips_registry_from_member() {
+        let tmp = temp_workspace(
+            "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
+            &[(
+                "app",
+                "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
+            )],
+        );
+
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let content = read_file(&tmp, "crates/app/Cargo.toml");
+        assert!(content.contains("workspace = true"));
+        assert!(
+            !content.contains("registry"),
+            "registry should be stripped from member dep, got:\n{content}"
         );
     }
 
