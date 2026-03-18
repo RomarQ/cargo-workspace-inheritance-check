@@ -3,9 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::workspace::WorkspaceInfo;
 
+/// Key: (dep_name, registry). Value: list of (member_path, version).
+type DepUsageMap = BTreeMap<(String, Option<String>), Vec<(String, Option<String>)>>;
+
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut dep_usage: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
+    let mut dep_usage: DepUsageMap = BTreeMap::new();
 
     for member in &workspace.members {
         let member_rel = member
@@ -27,7 +30,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 // treat as an independent dep eligible for promotion.
                 if dep.registry != ws_dep.registry {
                     dep_usage
-                        .entry(lookup_name.to_string())
+                        .entry((lookup_name.to_string(), dep.registry.clone()))
                         .or_default()
                         .push((member_rel.clone(), dep.version.clone()));
                     continue;
@@ -52,14 +55,14 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 });
             } else {
                 dep_usage
-                    .entry(lookup_name.to_string())
+                    .entry((lookup_name.to_string(), dep.registry.clone()))
                     .or_default()
                     .push((member_rel.clone(), dep.version.clone()));
             }
         }
     }
 
-    for (dep_name, usages) in &dep_usage {
+    for ((dep_name, registry), usages) in &dep_usage {
         if usages.len() >= promotion_threshold {
             let mut version_counts: HashMap<&str, usize> = HashMap::new();
             for (_, ver) in usages {
@@ -79,6 +82,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                     count: usages.len(),
                     members: usages.iter().map(|(m, _)| m.clone()).collect(),
                     suggested_version,
+                    suggested_registry: registry.clone(),
                 },
             });
         }
@@ -199,6 +203,80 @@ mod tests {
         assert!(
             diags.is_empty(),
             "dep from different registry should not match workspace dep: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_promotion_candidate_with_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in &["one", "two"] {
+            std::fs::create_dir_all(dir.path().join(format!("crates/{name}/src"))).unwrap();
+            std::fs::write(
+                dir.path().join(format!("crates/{name}/Cargo.toml")),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\n\
+                     my-crate = {{ version = \"1.0\", registry = \"my-registry\" }}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+        }
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n",
+        )
+        .unwrap();
+
+        let ws = parse_workspace(dir.path()).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::PromotionCandidate { .. }
+        ));
+        if let DiagnosticKind::PromotionCandidate {
+            suggested_registry, ..
+        } = &diags[0].kind
+        {
+            assert_eq!(suggested_registry.as_deref(), Some("my-registry"));
+        }
+    }
+
+    #[test]
+    fn test_different_registries_not_grouped_for_promotion() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/one/src")).unwrap();
+        std::fs::write(
+            dir.path().join("crates/one/Cargo.toml"),
+            "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\n\
+             my-crate = { version = \"1.0\", registry = \"registry-a\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("crates/one/src/lib.rs"), "").unwrap();
+
+        std::fs::create_dir_all(dir.path().join("crates/two/src")).unwrap();
+        std::fs::write(
+            dir.path().join("crates/two/Cargo.toml"),
+            "[package]\nname = \"two\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\n\
+             my-crate = { version = \"1.0\", registry = \"registry-b\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("crates/two/src/lib.rs"), "").unwrap();
+
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n",
+        )
+        .unwrap();
+
+        let ws = parse_workspace(dir.path()).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert!(
+            diags.is_empty(),
+            "deps from different registries should not be grouped: {diags:?}"
         );
     }
 

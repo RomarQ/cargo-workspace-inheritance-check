@@ -37,6 +37,8 @@ pub enum DiagnosticKind {
         members: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_registry: Option<String>,
     },
 }
 
@@ -68,6 +70,7 @@ impl Diagnostic {
                 count,
                 members,
                 suggested_version,
+                suggested_registry,
             } => {
                 let severity = match self.severity {
                     Severity::Error => "error",
@@ -81,9 +84,14 @@ impl Diagnostic {
                     lines.push(format!("  --> {m}"));
                 }
                 if let Some(ver) = suggested_version {
+                    let value = if let Some(reg) = suggested_registry {
+                        format!("{{ version = \"{ver}\", registry = \"{reg}\" }}")
+                    } else {
+                        format!("\"{ver}\"")
+                    };
                     lines.push(format!(
-                        "  hint: consider adding `{} = \"{}\"` to [workspace.dependencies]",
-                        self.dependency, ver,
+                        "  hint: consider adding `{} = {}` to [workspace.dependencies]",
+                        self.dependency, value,
                     ));
                 }
                 lines.join("\n")
@@ -195,6 +203,7 @@ mod tests {
                     "crates/node/Cargo.toml".into(),
                 ],
                 suggested_version: Some("0.9".into()),
+                suggested_registry: None,
             },
         };
         let output = d.format_human();
