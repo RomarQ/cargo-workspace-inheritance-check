@@ -153,7 +153,7 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
     let mut dependencies = Vec::new();
 
     for section in &DEP_SECTIONS {
-        if let Some(table) = doc.get(*section).and_then(|v| v.as_table()) {
+        if let Some(table) = doc.get(section).and_then(|v| v.as_table()) {
             parse_dep_table(table, &mut dependencies);
         }
     }
@@ -163,7 +163,7 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
         for (_target_cfg, target_value) in target_table {
             if let Some(target_tbl) = target_value.as_table() {
                 for section in &DEP_SECTIONS {
-                    if let Some(dep_table) = target_tbl.get(*section).and_then(|v| v.as_table()) {
+                    if let Some(dep_table) = target_tbl.get(section).and_then(|v| v.as_table()) {
                         parse_dep_table(dep_table, &mut dependencies);
                     }
                 }
