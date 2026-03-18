@@ -25,8 +25,7 @@ pub struct MemberDep {
     pub workspace: bool,
 }
 
-pub(crate) const DEP_SECTIONS: [&str; 3] =
-    ["dependencies", "dev-dependencies", "build-dependencies"];
+const DEP_SECTIONS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
 pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
     let content = std::fs::read_to_string(path)
@@ -57,6 +56,36 @@ pub(crate) fn for_each_dep_table(doc: &DocumentMut, mut f: impl FnMut(&toml_edit
             if let Some(target_tbl) = target_value.as_table() {
                 for section in &DEP_SECTIONS {
                     if let Some(dep_table) = target_tbl.get(section).and_then(|v| v.as_table()) {
+                        f(dep_table);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Mutable variant of [`for_each_dep_table`].
+pub(crate) fn for_each_dep_table_mut(
+    doc: &mut DocumentMut,
+    mut f: impl FnMut(&mut dyn toml_edit::TableLike),
+) {
+    for section in &DEP_SECTIONS {
+        if let Some(table) = doc.get_mut(section).and_then(|v| v.as_table_like_mut()) {
+            f(table);
+        }
+    }
+    if let Some(target_table) = doc.get_mut("target").and_then(|v| v.as_table_mut()) {
+        let target_keys: Vec<String> = target_table.iter().map(|(k, _)| k.to_string()).collect();
+        for target_key in target_keys {
+            if let Some(target_tbl) = target_table
+                .get_mut(&target_key)
+                .and_then(|v| v.as_table_mut())
+            {
+                for section in &DEP_SECTIONS {
+                    if let Some(dep_table) = target_tbl
+                        .get_mut(section)
+                        .and_then(|v| v.as_table_like_mut())
+                    {
                         f(dep_table);
                     }
                 }

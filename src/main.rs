@@ -1,6 +1,6 @@
 use cargo_workspace_inheritance_check::{check, diagnostic, fix, workspace};
 use clap::{Parser, ValueEnum};
-use diagnostic::DiagnosticReport;
+use diagnostic::{DiagnosticKind, DiagnosticReport};
 use std::path::PathBuf;
 use std::process;
 
@@ -64,7 +64,7 @@ fn main() {
     // Promote warnings to errors if requested
     if cli.promotion_failure {
         for d in &mut diagnostics {
-            if matches!(d.check, diagnostic::CheckKind::PromotionCandidate) {
+            if matches!(d.kind, DiagnosticKind::PromotionCandidate { .. }) {
                 d.severity = diagnostic::Severity::Error;
             }
         }

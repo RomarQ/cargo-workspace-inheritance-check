@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::diagnostic::{CheckKind, Diagnostic, Severity};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::workspace::WorkspaceInfo;
 
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
@@ -23,21 +23,22 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
 
             if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
-                let check = match (&dep.version, &ws_dep.version) {
-                    (Some(dep_ver), Some(ws_ver)) if dep_ver == ws_ver => CheckKind::NotInherited,
-                    (Some(_), Some(_)) => CheckKind::VersionMismatch,
-                    _ => CheckKind::NotInherited,
+                let kind = match (&dep.version, &ws_dep.version) {
+                    (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
+                        version: dep.version.clone(),
+                        member: member_rel.clone(),
+                        workspace_version: ws_dep.version.clone(),
+                    },
+                    _ => DiagnosticKind::NotInherited {
+                        version: dep.version.clone(),
+                        member: member_rel.clone(),
+                        workspace_version: ws_dep.version.clone(),
+                    },
                 };
                 diagnostics.push(Diagnostic {
                     severity: Severity::Error,
-                    check,
                     dependency: lookup_name.to_string(),
-                    version: dep.version.clone(),
-                    member: Some(member_rel.clone()),
-                    workspace_version: ws_dep.version.clone(),
-                    count: None,
-                    members: None,
-                    suggested_version: None,
+                    kind,
                 });
             } else {
                 dep_usage
@@ -63,14 +64,12 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 
             diagnostics.push(Diagnostic {
                 severity: Severity::Warning,
-                check: CheckKind::PromotionCandidate,
                 dependency: dep_name.clone(),
-                version: None,
-                member: None,
-                workspace_version: None,
-                count: Some(usages.len()),
-                members: Some(usages.iter().map(|(m, _)| m.clone()).collect()),
-                suggested_version,
+                kind: DiagnosticKind::PromotionCandidate {
+                    count: usages.len(),
+                    members: usages.iter().map(|(m, _)| m.clone()).collect(),
+                    suggested_version,
+                },
             });
         }
     }
@@ -97,7 +96,7 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "serde");
-        assert!(matches!(diags[0].check, CheckKind::NotInherited));
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 
     #[test]
@@ -106,9 +105,19 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "rand");
-        assert!(matches!(diags[0].check, CheckKind::VersionMismatch));
-        assert_eq!(diags[0].version.as_deref(), Some("0.7"));
-        assert_eq!(diags[0].workspace_version.as_deref(), Some("0.8"));
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::VersionMismatch { .. }
+        ));
+        if let DiagnosticKind::VersionMismatch {
+            version,
+            workspace_version,
+            ..
+        } = &diags[0].kind
+        {
+            assert_eq!(version.as_deref(), Some("0.7"));
+            assert_eq!(workspace_version.as_deref(), Some("0.8"));
+        }
     }
 
     #[test]
@@ -117,8 +126,13 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "serde_yaml");
-        assert!(matches!(diags[0].check, CheckKind::PromotionCandidate));
-        assert_eq!(diags[0].count, Some(2));
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::PromotionCandidate { .. }
+        ));
+        if let DiagnosticKind::PromotionCandidate { count, .. } = &diags[0].kind {
+            assert_eq!(*count, 2);
+        }
     }
 
     #[test]
@@ -147,6 +161,6 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "winapi");
-        assert!(matches!(diags[0].check, CheckKind::NotInherited));
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 }

@@ -1,13 +1,5 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CheckKind {
-    NotInherited,
-    VersionMismatch,
-    PromotionCandidate,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -18,44 +10,65 @@ pub enum Severity {
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
-    pub check: CheckKind,
     pub dependency: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub member: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub members: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggested_version: Option<String>,
+    #[serde(flatten)]
+    pub kind: DiagnosticKind,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "check", rename_all = "kebab-case")]
+pub enum DiagnosticKind {
+    NotInherited {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        member: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_version: Option<String>,
+    },
+    VersionMismatch {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        member: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_version: Option<String>,
+    },
+    PromotionCandidate {
+        count: usize,
+        members: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_version: Option<String>,
+    },
 }
 
 impl Diagnostic {
     pub fn format_human(&self) -> String {
-        match self.check {
-            CheckKind::NotInherited => {
-                let ver = self.version.as_deref().unwrap_or("?");
-                let member = self.member.as_deref().unwrap_or("?");
+        match &self.kind {
+            DiagnosticKind::NotInherited {
+                version, member, ..
+            } => {
+                let ver = version.as_deref().unwrap_or("?");
                 format!(
                     "error: `{dep} = \"{ver}\"` in {member} should use `{dep} = {{ workspace = true }}`",
                     dep = self.dependency,
                 )
             }
-            CheckKind::VersionMismatch => {
-                let ver = self.version.as_deref().unwrap_or("?");
-                let member = self.member.as_deref().unwrap_or("?");
-                let ws_ver = self.workspace_version.as_deref().unwrap_or("?");
+            DiagnosticKind::VersionMismatch {
+                version,
+                member,
+                workspace_version,
+            } => {
+                let ver = version.as_deref().unwrap_or("?");
+                let ws_ver = workspace_version.as_deref().unwrap_or("?");
                 format!(
                     "error: `{dep} = \"{ver}\"` in {member} has a different version than workspace `{dep} = \"{ws_ver}\"`",
                     dep = self.dependency,
                 )
             }
-            CheckKind::PromotionCandidate => {
-                let count = self.count.unwrap_or(0);
+            DiagnosticKind::PromotionCandidate {
+                count,
+                members,
+                suggested_version,
+            } => {
                 let severity = match self.severity {
                     Severity::Error => "error",
                     Severity::Warning => "warning",
@@ -64,12 +77,10 @@ impl Diagnostic {
                     "{severity}: `{}` appears in {count} crates but is not in [workspace.dependencies]",
                     self.dependency,
                 )];
-                if let Some(members) = &self.members {
-                    for m in members {
-                        lines.push(format!("  --> {m}"));
-                    }
+                for m in members {
+                    lines.push(format!("  --> {m}"));
                 }
-                if let Some(ver) = &self.suggested_version {
+                if let Some(ver) = suggested_version {
                     lines.push(format!(
                         "  hint: consider adding `{} = \"{}\"` to [workspace.dependencies]",
                         self.dependency, ver,
@@ -140,14 +151,12 @@ mod tests {
     fn test_not_inherited_human_format() {
         let d = Diagnostic {
             severity: Severity::Error,
-            check: CheckKind::NotInherited,
             dependency: "lru".into(),
-            version: Some("0.12".into()),
-            member: Some("crates/crypto/Cargo.toml".into()),
-            workspace_version: Some("0.12".into()),
-            count: None,
-            members: None,
-            suggested_version: None,
+            kind: DiagnosticKind::NotInherited {
+                version: Some("0.12".into()),
+                member: "crates/crypto/Cargo.toml".into(),
+                workspace_version: Some("0.12".into()),
+            },
         };
         let output = d.format_human();
         assert!(output.contains("error:"));
@@ -160,14 +169,12 @@ mod tests {
     fn test_version_mismatch_human_format() {
         let d = Diagnostic {
             severity: Severity::Error,
-            check: CheckKind::VersionMismatch,
             dependency: "rand".into(),
-            version: Some("0.7".into()),
-            member: Some("crates/utils/Cargo.toml".into()),
-            workspace_version: Some("0.8".into()),
-            count: None,
-            members: None,
-            suggested_version: None,
+            kind: DiagnosticKind::VersionMismatch {
+                version: Some("0.7".into()),
+                member: "crates/utils/Cargo.toml".into(),
+                workspace_version: Some("0.8".into()),
+            },
         };
         let output = d.format_human();
         assert!(output.contains("error:"));
@@ -180,17 +187,15 @@ mod tests {
     fn test_promotion_candidate_human_format() {
         let d = Diagnostic {
             severity: Severity::Warning,
-            check: CheckKind::PromotionCandidate,
             dependency: "serde_yaml".into(),
-            version: None,
-            member: None,
-            workspace_version: None,
-            count: Some(3),
-            members: Some(vec![
-                "crates/config/Cargo.toml".into(),
-                "crates/node/Cargo.toml".into(),
-            ]),
-            suggested_version: Some("0.9".into()),
+            kind: DiagnosticKind::PromotionCandidate {
+                count: 3,
+                members: vec![
+                    "crates/config/Cargo.toml".into(),
+                    "crates/node/Cargo.toml".into(),
+                ],
+                suggested_version: Some("0.9".into()),
+            },
         };
         let output = d.format_human();
         assert!(output.contains("warning:"));
@@ -203,14 +208,12 @@ mod tests {
     fn test_report_summary_human() {
         let report = DiagnosticReport::new(vec![Diagnostic {
             severity: Severity::Error,
-            check: CheckKind::NotInherited,
             dependency: "lru".into(),
-            version: Some("0.12".into()),
-            member: Some("crates/crypto/Cargo.toml".into()),
-            workspace_version: Some("0.12".into()),
-            count: None,
-            members: None,
-            suggested_version: None,
+            kind: DiagnosticKind::NotInherited {
+                version: Some("0.12".into()),
+                member: "crates/crypto/Cargo.toml".into(),
+                workspace_version: Some("0.12".into()),
+            },
         }]);
         let output = report.format_human();
         assert!(output.contains("1 error"));
@@ -220,14 +223,12 @@ mod tests {
     fn test_report_json() {
         let report = DiagnosticReport::new(vec![Diagnostic {
             severity: Severity::Error,
-            check: CheckKind::NotInherited,
             dependency: "lru".into(),
-            version: Some("0.12".into()),
-            member: Some("crates/crypto/Cargo.toml".into()),
-            workspace_version: Some("0.12".into()),
-            count: None,
-            members: None,
-            suggested_version: None,
+            kind: DiagnosticKind::NotInherited {
+                version: Some("0.12".into()),
+                member: "crates/crypto/Cargo.toml".into(),
+                workspace_version: Some("0.12".into()),
+            },
         }]);
         let json = report.format_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
