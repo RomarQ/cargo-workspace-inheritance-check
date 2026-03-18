@@ -190,4 +190,13 @@ mod tests {
             "excluded member should not generate diagnostics"
         );
     }
+
+    #[test]
+    fn test_target_specific_not_inherited() {
+        let ws = parse_workspace(&fixture("target_deps")).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].dependency, "winapi");
+        assert!(matches!(diags[0].check, CheckKind::NotInherited));
+    }
 }
