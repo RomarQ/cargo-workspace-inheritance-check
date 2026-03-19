@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
-use crate::diagnostic::{format_dep_value, Diagnostic, DiagnosticKind};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, format_dep_value};
 use crate::workspace::{
     for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest, write_manifest,
 };
