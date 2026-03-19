@@ -37,6 +37,11 @@ pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
         .map_err(|e| format!("Failed to parse {}: {e}", path.display()))
 }
 
+pub(crate) fn write_manifest(path: &Path, doc: &DocumentMut) -> Result<(), String> {
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+}
+
 pub(crate) fn item_as_table_like(item: &Item) -> Option<&dyn toml_edit::TableLike> {
     item.as_table()
         .map(|t| t as &dyn toml_edit::TableLike)

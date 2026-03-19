@@ -42,6 +42,24 @@ pub enum DiagnosticKind {
     },
 }
 
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Severity::Error => f.write_str("error"),
+            Severity::Warning => f.write_str("warning"),
+        }
+    }
+}
+
+/// Format a dependency value for display, e.g. `"1.0"` or `{ version = "1.0", registry = "r" }`.
+pub fn format_dep_value(version: &str, registry: Option<&str>) -> String {
+    if let Some(reg) = registry {
+        format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
+    } else {
+        format!("\"{version}\"")
+    }
+}
+
 impl Diagnostic {
     pub fn format_human(&self) -> String {
         match &self.kind {
@@ -72,23 +90,15 @@ impl Diagnostic {
                 suggested_version,
                 suggested_registry,
             } => {
-                let severity = match self.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                };
                 let mut lines = vec![format!(
-                    "{severity}: `{}` appears in {count} crates but is not in [workspace.dependencies]",
-                    self.dependency,
+                    "{}: `{}` appears in {count} crates but is not in [workspace.dependencies]",
+                    self.severity, self.dependency,
                 )];
                 for m in members {
                     lines.push(format!("  --> {m}"));
                 }
                 if let Some(ver) = suggested_version {
-                    let value = if let Some(reg) = suggested_registry {
-                        format!("{{ version = \"{ver}\", registry = \"{reg}\" }}")
-                    } else {
-                        format!("\"{ver}\"")
-                    };
+                    let value = format_dep_value(ver, suggested_registry.as_deref());
                     lines.push(format!(
                         "  hint: consider adding `{} = {}` to [workspace.dependencies]",
                         self.dependency, value,
