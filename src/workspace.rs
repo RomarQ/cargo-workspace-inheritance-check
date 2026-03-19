@@ -278,48 +278,14 @@ mod tests {
 
     #[test]
     fn test_parse_workspace_dep_with_registry() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n\
-             [workspace.dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("crates/app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\nmy-crate = { workspace = true }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_ws_dep")).unwrap();
         let ws_dep = ws.workspace_deps.get("my-crate").unwrap();
         assert_eq!(ws_dep.registry.as_deref(), Some("my-registry"));
     }
 
     #[test]
     fn test_parse_member_dep_with_registry() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n\
-             [workspace.dependencies]\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("crates/app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_member_dep")).unwrap();
         let dep = &ws.members[0].dependencies[0];
         assert_eq!(dep.name, "my-crate");
         assert_eq!(dep.registry.as_deref(), Some("my-registry"));

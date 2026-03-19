@@ -514,14 +514,7 @@ mod tests {
 
     #[test]
     fn test_fix_strips_registry_from_member() {
-        let tmp = temp_workspace(
-            "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
-            &[(
-                "app",
-                "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
-            )],
-        );
-
+        let tmp = copy_fixture("registry_not_inherited");
         let ws = parse_workspace(tmp.path()).unwrap();
         let diags = check::run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
@@ -538,20 +531,7 @@ mod tests {
 
     #[test]
     fn test_fix_promotion_carries_registry() {
-        let tmp = temp_workspace(
-            "",
-            &[
-                (
-                    "one",
-                    "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
-                ),
-                (
-                    "two",
-                    "my-crate = { version = \"1.0\", registry = \"my-registry\" }",
-                ),
-            ],
-        );
-
+        let tmp = copy_fixture("registry_promotion");
         let ws = parse_workspace(tmp.path()).unwrap();
         let diags = check::run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);

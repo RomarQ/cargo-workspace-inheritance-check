@@ -128,3 +128,78 @@ fn test_promotion_threshold() {
         "threshold 3 should not flag serde_yaml in 2 crates"
     );
 }
+
+#[test]
+fn test_registry_mismatch_not_flagged() {
+    let output = Command::new(cargo_bin())
+        .args(["--path", fixture("registry_mismatch").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "dep from different registry should not match workspace dep"
+    );
+}
+
+#[test]
+fn test_same_registry_not_inherited() {
+    let output = Command::new(cargo_bin())
+        .args([
+            "--path",
+            fixture("registry_not_inherited").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("error:"));
+    assert!(stdout.contains("my-crate"));
+    assert!(stdout.contains("workspace = true"));
+}
+
+#[test]
+fn test_registry_promotion_candidate() {
+    let output = Command::new(cargo_bin())
+        .args(["--path", fixture("registry_promotion").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "promotion is a warning, not error");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("warning:"));
+    assert!(stdout.contains("my-crate"));
+    assert!(stdout.contains("registry = \"my-registry\""));
+}
+
+#[test]
+fn test_registry_promotion_json() {
+    let output = Command::new(cargo_bin())
+        .args([
+            "--path",
+            fixture("registry_promotion").to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["diagnostics"][0]["check"], "promotion-candidate");
+    assert_eq!(
+        parsed["diagnostics"][0]["suggested_registry"],
+        "my-registry"
+    );
+}
+
+#[test]
+fn test_different_registries_no_promotion() {
+    let output = Command::new(cargo_bin())
+        .args(["--path", fixture("registry_different").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("my-crate"),
+        "deps from different registries should not be grouped"
+    );
+}

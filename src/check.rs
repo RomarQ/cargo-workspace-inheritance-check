@@ -172,25 +172,7 @@ mod tests {
 
     #[test]
     fn test_registry_mismatch_not_flagged_as_not_inherited() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n\
-             [workspace.dependencies]\n\
-             serde = \"1.0\"\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("crates/app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\n\
-             serde = { version = \"1.0\", registry = \"my-registry\" }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_mismatch")).unwrap();
         let diags = run_checks(&ws, 2);
         assert!(
             diags.is_empty(),
@@ -200,27 +182,7 @@ mod tests {
 
     #[test]
     fn test_promotion_candidate_with_registry() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in &["one", "two"] {
-            std::fs::create_dir_all(dir.path().join(format!("crates/{name}/src"))).unwrap();
-            std::fs::write(
-                dir.path().join(format!("crates/{name}/Cargo.toml")),
-                format!(
-                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-                     [dependencies]\n\
-                     my-crate = {{ version = \"1.0\", registry = \"my-registry\" }}\n"
-                ),
-            )
-            .unwrap();
-            std::fs::write(dir.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
-        }
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n",
-        )
-        .unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_promotion")).unwrap();
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert!(matches!(
@@ -237,34 +199,7 @@ mod tests {
 
     #[test]
     fn test_different_registries_not_grouped_for_promotion() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/one/src")).unwrap();
-        std::fs::write(
-            dir.path().join("crates/one/Cargo.toml"),
-            "[package]\nname = \"one\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"registry-a\" }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/one/src/lib.rs"), "").unwrap();
-
-        std::fs::create_dir_all(dir.path().join("crates/two/src")).unwrap();
-        std::fs::write(
-            dir.path().join("crates/two/Cargo.toml"),
-            "[package]\nname = \"two\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"registry-b\" }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/two/src/lib.rs"), "").unwrap();
-
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n",
-        )
-        .unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_different")).unwrap();
         let diags = run_checks(&ws, 2);
         assert!(
             diags.is_empty(),
@@ -274,25 +209,7 @@ mod tests {
 
     #[test]
     fn test_same_registry_flagged_as_not_inherited() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/app/src")).unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n\n\
-             [workspace.dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("crates/app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("crates/app/src/lib.rs"), "").unwrap();
-
-        let ws = parse_workspace(dir.path()).unwrap();
+        let ws = parse_workspace(&fixture("registry_not_inherited")).unwrap();
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1, "same registry should match: {diags:?}");
         assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
