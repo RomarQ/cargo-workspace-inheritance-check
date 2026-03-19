@@ -1,12 +1,15 @@
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
-use toml_edit::{InlineTable, Item, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
-use crate::diagnostic::{Diagnostic, DiagnosticKind};
+use crate::diagnostic::{format_dep_value, Diagnostic, DiagnosticKind};
 use crate::workspace::{
-    for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest,
+    for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest, write_manifest,
 };
+
+/// Keys that are owned by the workspace dep and must be stripped from members.
+const STRIPPED_KEYS: &[&str] = &["version", "default-features", "registry"];
 
 pub struct FixSummary {
     pub fixes_applied: usize,
@@ -14,42 +17,53 @@ pub struct FixSummary {
     pub actions: Vec<String>,
 }
 
+struct Promotion<'a> {
+    dep_name: &'a str,
+    version: &'a str,
+    registry: Option<&'a str>,
+    default_features: bool,
+}
+
 pub fn apply_fixes(
     workspace_root: &Path,
     diagnostics: &[Diagnostic],
 ) -> Result<FixSummary, String> {
-    let mut modified_files = BTreeSet::new();
-    let mut fixes_applied = 0;
+    // Collect all work first, then batch file I/O.
+    // member_fixes: path -> list of dep names to rewrite
+    let mut member_fixes: BTreeMap<PathBuf, Vec<&str>> = BTreeMap::new();
+    let mut promotions: Vec<Promotion> = Vec::new();
     let mut actions = Vec::new();
+    let mut fixes_applied = 0;
 
     for diag in diagnostics {
         match &diag.kind {
             DiagnosticKind::NotInherited { member, .. }
             | DiagnosticKind::VersionMismatch { member, .. } => {
                 let full_path = workspace_root.join(member);
-                if fix_member_dep(&full_path, &diag.dependency)? {
-                    modified_files.insert(full_path);
-                    fixes_applied += 1;
-                    let msg = match &diag.kind {
-                        DiagnosticKind::NotInherited { .. } => format!(
-                            "fixed: `{}` in {} now uses workspace inheritance",
-                            diag.dependency, member,
-                        ),
-                        DiagnosticKind::VersionMismatch {
-                            version,
-                            workspace_version,
-                            ..
-                        } => format!(
-                            "fixed: `{}` in {} changed from {} to {} (workspace version)",
-                            diag.dependency,
-                            member,
-                            version.as_deref().unwrap_or("?"),
-                            workspace_version.as_deref().unwrap_or("?"),
-                        ),
-                        _ => unreachable!(),
-                    };
-                    actions.push(msg);
-                }
+                member_fixes
+                    .entry(full_path)
+                    .or_default()
+                    .push(&diag.dependency);
+                fixes_applied += 1;
+                let msg = match &diag.kind {
+                    DiagnosticKind::NotInherited { .. } => format!(
+                        "fixed: `{}` in {} now uses workspace inheritance",
+                        diag.dependency, member,
+                    ),
+                    DiagnosticKind::VersionMismatch {
+                        version,
+                        workspace_version,
+                        ..
+                    } => format!(
+                        "fixed: `{}` in {} changed from {} to {} (workspace version)",
+                        diag.dependency,
+                        member,
+                        version.as_deref().unwrap_or("?"),
+                        workspace_version.as_deref().unwrap_or("?"),
+                    ),
+                    _ => unreachable!(),
+                };
+                actions.push(msg);
             }
             DiagnosticKind::PromotionCandidate {
                 members,
@@ -57,41 +71,65 @@ pub fn apply_fixes(
                 suggested_registry,
                 ..
             } => {
-                let Some(version) = suggested_version else {
+                let Some(version) = suggested_version.as_deref() else {
                     continue;
                 };
-                let root_toml = workspace_root.join("Cargo.toml");
                 let default_features = !any_member_disables_default_features(
                     workspace_root,
                     members,
                     &diag.dependency,
                 );
-                add_workspace_dep(
-                    &root_toml,
-                    &diag.dependency,
+                promotions.push(Promotion {
+                    dep_name: &diag.dependency,
                     version,
+                    registry: suggested_registry.as_deref(),
                     default_features,
-                    suggested_registry.as_deref(),
-                )?;
-                modified_files.insert(root_toml);
-
+                });
                 for member_path in members {
-                    let full_path = workspace_root.join(member_path);
-                    fix_member_dep(&full_path, &diag.dependency)?;
-                    modified_files.insert(full_path);
+                    member_fixes
+                        .entry(workspace_root.join(member_path))
+                        .or_default()
+                        .push(&diag.dependency);
                 }
                 fixes_applied += 1;
                 let member_list = members.join(", ");
-                let dep_value = if let Some(reg) = suggested_registry {
-                    format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
-                } else {
-                    format!("\"{version}\"")
-                };
+                let dep_value = format_dep_value(version, suggested_registry.as_deref());
                 actions.push(format!(
                     "fixed: `{dep} = {dep_value}` added to [workspace.dependencies], updated: {member_list}",
                     dep = diag.dependency,
                 ));
             }
+        }
+    }
+
+    // Apply all promotions to root Cargo.toml in a single read/write.
+    let mut modified_files = BTreeSet::new();
+    if !promotions.is_empty() {
+        let root_toml = workspace_root.join("Cargo.toml");
+        let mut doc = read_manifest(&root_toml)?;
+        for promo in &promotions {
+            insert_workspace_dep(&mut doc, promo)?;
+        }
+        write_manifest(&root_toml, &doc)?;
+        modified_files.insert(root_toml);
+    }
+
+    // Apply all member dep rewrites, one read/write per file.
+    for (manifest_path, dep_names) in &member_fixes {
+        let mut doc = read_manifest(manifest_path)?;
+        let mut modified = false;
+        for_each_dep_table_mut(&mut doc, |table| {
+            for dep_name in dep_names {
+                if let Some(key) = find_dep_key(table, dep_name) {
+                    if rewrite_dep_entry(table, &key) {
+                        modified = true;
+                    }
+                }
+            }
+        });
+        if modified {
+            write_manifest(manifest_path, &doc)?;
+            modified_files.insert(manifest_path.clone());
         }
     }
 
@@ -119,26 +157,6 @@ fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<Stri
     None
 }
 
-fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> {
-    let mut doc = read_manifest(manifest_path)?;
-    let mut modified = false;
-
-    for_each_dep_table_mut(&mut doc, |table| {
-        if let Some(key) = find_dep_key(table, dep_name)
-            && rewrite_dep_entry(table, &key)
-        {
-            modified = true;
-        }
-    });
-
-    if modified {
-        std::fs::write(manifest_path, doc.to_string())
-            .map_err(|e| format!("Failed to write {}: {e}", manifest_path.display()))?;
-    }
-
-    Ok(modified)
-}
-
 /// Rewrite a dependency entry to use `{ workspace = true }`.
 ///
 /// Strips `version`, `default-features`, and `registry` (which must be set at
@@ -153,9 +171,9 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
         if dep_table.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
             return false;
         }
-        dep_table.remove("version");
-        dep_table.remove("default-features");
-        dep_table.remove("registry");
+        for k in STRIPPED_KEYS {
+            dep_table.remove(k);
+        }
         dep_table.insert("workspace", toml_edit::value(true));
         return true;
     }
@@ -173,12 +191,10 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
             if existing.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
                 return false;
             }
-            // Rebuild with workspace = true, dropping version, default-features, and registry
             let mut rebuilt = InlineTable::new();
             rebuilt.insert("workspace", Value::from(true));
             for (k, v) in existing.iter() {
-                if k != "version" && k != "workspace" && k != "default-features" && k != "registry"
-                {
+                if k != "workspace" && !STRIPPED_KEYS.contains(&k) {
                     rebuilt.insert(k, v.clone());
                 }
             }
@@ -228,19 +244,12 @@ fn has_default_features_false(table: &dyn toml_edit::TableLike, dep_name: &str) 
         == Some(false)
 }
 
-fn add_workspace_dep(
-    root_toml_path: &Path,
-    dep_name: &str,
-    version: &str,
-    default_features: bool,
-    registry: Option<&str>,
-) -> Result<(), String> {
-    let mut doc = read_manifest(root_toml_path)?;
-
+/// Insert a promoted dependency into the in-memory root document.
+fn insert_workspace_dep(doc: &mut DocumentMut, promo: &Promotion) -> Result<(), String> {
     let workspace = doc
         .get_mut("workspace")
         .and_then(|v| v.as_table_mut())
-        .ok_or_else(|| format!("No [workspace] in {}", root_toml_path.display()))?;
+        .ok_or("No [workspace] in root Cargo.toml")?;
 
     if !workspace.contains_key("dependencies") {
         workspace.insert("dependencies", toml_edit::table());
@@ -251,24 +260,21 @@ fn add_workspace_dep(
         .and_then(|v| v.as_table_mut())
         .ok_or("Failed to access [workspace.dependencies]")?;
 
-    if !ws_deps.contains_key(dep_name) {
-        if default_features && registry.is_none() {
-            ws_deps.insert(dep_name, toml_edit::value(version));
+    if !ws_deps.contains_key(promo.dep_name) {
+        if promo.default_features && promo.registry.is_none() {
+            ws_deps.insert(promo.dep_name, toml_edit::value(promo.version));
         } else {
             let mut table = InlineTable::new();
-            table.insert("version", Value::from(version));
-            if !default_features {
+            table.insert("version", Value::from(promo.version));
+            if !promo.default_features {
                 table.insert("default-features", Value::from(false));
             }
-            if let Some(reg) = registry {
+            if let Some(reg) = promo.registry {
                 table.insert("registry", Value::from(reg));
             }
-            ws_deps.insert(dep_name, Item::Value(Value::InlineTable(table)));
+            ws_deps.insert(promo.dep_name, Item::Value(Value::InlineTable(table)));
         }
     }
-
-    std::fs::write(root_toml_path, doc.to_string())
-        .map_err(|e| format!("Failed to write {}: {e}", root_toml_path.display()))?;
 
     Ok(())
 }
