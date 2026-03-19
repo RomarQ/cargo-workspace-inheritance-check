@@ -3,9 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::workspace::WorkspaceInfo;
 
+/// Key: (dep_name, registry). Value: list of (member_path, version).
+type DepUsageMap = BTreeMap<(String, Option<String>), Vec<(String, Option<String>)>>;
+
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut dep_usage: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
+    let mut dep_usage: DepUsageMap = BTreeMap::new();
 
     for member in &workspace.members {
         let member_rel = member
@@ -22,7 +25,9 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
 
-            if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
+            if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name)
+                && dep.registry == ws_dep.registry
+            {
                 let kind = match (&dep.version, &ws_dep.version) {
                     (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
                         version: dep.version.clone(),
@@ -42,14 +47,14 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 });
             } else {
                 dep_usage
-                    .entry(lookup_name.to_string())
+                    .entry((lookup_name.to_string(), dep.registry.clone()))
                     .or_default()
                     .push((member_rel.clone(), dep.version.clone()));
             }
         }
     }
 
-    for (dep_name, usages) in &dep_usage {
+    for ((dep_name, registry), usages) in &dep_usage {
         if usages.len() >= promotion_threshold {
             let mut version_counts: HashMap<&str, usize> = HashMap::new();
             for (_, ver) in usages {
@@ -69,6 +74,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                     count: usages.len(),
                     members: usages.iter().map(|(m, _)| m.clone()).collect(),
                     suggested_version,
+                    suggested_registry: registry.clone(),
                 },
             });
         }
@@ -161,6 +167,51 @@ mod tests {
         let diags = run_checks(&ws, 2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].dependency, "winapi");
+        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
+    }
+
+    #[test]
+    fn test_registry_mismatch_not_flagged_as_not_inherited() {
+        let ws = parse_workspace(&fixture("registry_mismatch")).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert!(
+            diags.is_empty(),
+            "dep from different registry should not match workspace dep: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_promotion_candidate_with_registry() {
+        let ws = parse_workspace(&fixture("registry_promotion")).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+        assert!(matches!(
+            diags[0].kind,
+            DiagnosticKind::PromotionCandidate { .. }
+        ));
+        if let DiagnosticKind::PromotionCandidate {
+            suggested_registry, ..
+        } = &diags[0].kind
+        {
+            assert_eq!(suggested_registry.as_deref(), Some("my-registry"));
+        }
+    }
+
+    #[test]
+    fn test_different_registries_not_grouped_for_promotion() {
+        let ws = parse_workspace(&fixture("registry_different")).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert!(
+            diags.is_empty(),
+            "deps from different registries should not be grouped: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_same_registry_flagged_as_not_inherited() {
+        let ws = parse_workspace(&fixture("registry_not_inherited")).unwrap();
+        let diags = run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1, "same registry should match: {diags:?}");
         assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 }

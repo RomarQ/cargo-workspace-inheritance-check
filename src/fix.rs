@@ -54,6 +54,7 @@ pub fn apply_fixes(
             DiagnosticKind::PromotionCandidate {
                 members,
                 suggested_version,
+                suggested_registry,
                 ..
             } => {
                 let Some(version) = suggested_version else {
@@ -65,7 +66,13 @@ pub fn apply_fixes(
                     members,
                     &diag.dependency,
                 );
-                add_workspace_dep(&root_toml, &diag.dependency, version, default_features)?;
+                add_workspace_dep(
+                    &root_toml,
+                    &diag.dependency,
+                    version,
+                    default_features,
+                    suggested_registry.as_deref(),
+                )?;
                 modified_files.insert(root_toml);
 
                 for member_path in members {
@@ -75,9 +82,14 @@ pub fn apply_fixes(
                 }
                 fixes_applied += 1;
                 let member_list = members.join(", ");
+                let dep_value = if let Some(reg) = suggested_registry {
+                    format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
+                } else {
+                    format!("\"{version}\"")
+                };
                 actions.push(format!(
-                    "fixed: `{} = \"{}\"` added to [workspace.dependencies], updated: {member_list}",
-                    diag.dependency, version,
+                    "fixed: `{dep} = {dep_value}` added to [workspace.dependencies], updated: {member_list}",
+                    dep = diag.dependency,
                 ));
             }
         }
@@ -129,8 +141,8 @@ fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> 
 
 /// Rewrite a dependency entry to use `{ workspace = true }`.
 ///
-/// Strips `version` and `default-features` (which must be set at the workspace
-/// level to have any effect). Preserves other keys like `features` and `optional`.
+/// Strips `version`, `default-features`, and `registry` (which must be set at
+/// the workspace level). Preserves other keys like `features` and `optional`.
 fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
     let Some(item) = table.get_mut(key) else {
         return false;
@@ -143,6 +155,7 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
         }
         dep_table.remove("version");
         dep_table.remove("default-features");
+        dep_table.remove("registry");
         dep_table.insert("workspace", toml_edit::value(true));
         return true;
     }
@@ -160,11 +173,12 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
             if existing.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
                 return false;
             }
-            // Rebuild with workspace = true, dropping version and default-features
+            // Rebuild with workspace = true, dropping version, default-features, and registry
             let mut rebuilt = InlineTable::new();
             rebuilt.insert("workspace", Value::from(true));
             for (k, v) in existing.iter() {
-                if k != "version" && k != "workspace" && k != "default-features" {
+                if k != "version" && k != "workspace" && k != "default-features" && k != "registry"
+                {
                     rebuilt.insert(k, v.clone());
                 }
             }
@@ -219,6 +233,7 @@ fn add_workspace_dep(
     dep_name: &str,
     version: &str,
     default_features: bool,
+    registry: Option<&str>,
 ) -> Result<(), String> {
     let mut doc = read_manifest(root_toml_path)?;
 
@@ -237,12 +252,17 @@ fn add_workspace_dep(
         .ok_or("Failed to access [workspace.dependencies]")?;
 
     if !ws_deps.contains_key(dep_name) {
-        if default_features {
+        if default_features && registry.is_none() {
             ws_deps.insert(dep_name, toml_edit::value(version));
         } else {
             let mut table = InlineTable::new();
             table.insert("version", Value::from(version));
-            table.insert("default-features", Value::from(false));
+            if !default_features {
+                table.insert("default-features", Value::from(false));
+            }
+            if let Some(reg) = registry {
+                table.insert("registry", Value::from(reg));
+            }
             ws_deps.insert(dep_name, Item::Value(Value::InlineTable(table)));
         }
     }
@@ -490,6 +510,49 @@ mod tests {
             diags2.is_empty(),
             "expected no diagnostics after fix, got: {diags2:?}"
         );
+    }
+
+    #[test]
+    fn test_fix_strips_registry_from_member() {
+        let tmp = copy_fixture("registry_not_inherited");
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let content = read_file(&tmp, "crates/app/Cargo.toml");
+        assert!(content.contains("workspace = true"));
+        assert!(
+            !content.contains("registry"),
+            "registry should be stripped from member dep, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn test_fix_promotion_carries_registry() {
+        let tmp = copy_fixture("registry_promotion");
+        let ws = parse_workspace(tmp.path()).unwrap();
+        let diags = check::run_checks(&ws, 2);
+        assert_eq!(diags.len(), 1);
+
+        apply_fixes(tmp.path(), &diags).unwrap();
+
+        let root = read_file(&tmp, "Cargo.toml");
+        assert!(
+            root.contains("registry = \"my-registry\""),
+            "promoted workspace dep should include registry, got:\n{root}"
+        );
+
+        // Members should NOT have registry (workspace owns it)
+        for name in &["one", "two"] {
+            let content = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
+            assert!(content.contains("workspace = true"));
+            assert!(
+                !content.contains("registry"),
+                "member {name} should not have registry after fix, got:\n{content}"
+            );
+        }
     }
 
     #[test]

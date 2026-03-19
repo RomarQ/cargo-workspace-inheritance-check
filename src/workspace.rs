@@ -11,6 +11,7 @@ pub struct WorkspaceInfo {
 
 pub struct WorkspaceDep {
     pub version: Option<String>,
+    pub registry: Option<String>,
 }
 
 pub struct MemberCrate {
@@ -22,6 +23,7 @@ pub struct MemberDep {
     pub name: String,
     pub package: Option<String>,
     pub version: Option<String>,
+    pub registry: Option<String>,
     pub workspace: bool,
 }
 
@@ -153,7 +155,11 @@ fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, 
                 .and_then(|v| v.as_str())
                 .map(String::from)
         });
-        deps.insert(name.to_string(), WorkspaceDep { version });
+        let registry = item_as_table_like(item)
+            .and_then(|t| t.get("registry"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        deps.insert(name.to_string(), WorkspaceDep { version, registry });
     }
     deps
 }
@@ -203,8 +209,8 @@ fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {
 
 fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
     for (key, item) in table {
-        let (version, workspace, package) = if let Some(s) = item.as_str() {
-            (Some(s.to_string()), false, None)
+        let (version, workspace, package, registry) = if let Some(s) = item.as_str() {
+            (Some(s.to_string()), false, None, None)
         } else if let Some(t) = item_as_table_like(item) {
             let version = t.get("version").and_then(|v| v.as_str()).map(String::from);
             let workspace = t
@@ -212,6 +218,7 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let package = t.get("package").and_then(|v| v.as_str()).map(String::from);
+            let registry = t.get("registry").and_then(|v| v.as_str()).map(String::from);
 
             // Skip pure path/git deps with no version
             if !workspace && version.is_none() && (t.contains_key("path") || t.contains_key("git"))
@@ -219,7 +226,7 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
                 continue;
             }
 
-            (version, workspace, package)
+            (version, workspace, package, registry)
         } else {
             continue;
         };
@@ -228,6 +235,7 @@ fn parse_dep_table(table: &toml_edit::Table, deps: &mut Vec<MemberDep>) {
             name: key.to_string(),
             package,
             version,
+            registry,
             workspace,
         });
     }
@@ -266,6 +274,21 @@ mod tests {
             assert!(!member.dependencies.is_empty());
             assert!(member.dependencies[0].workspace);
         }
+    }
+
+    #[test]
+    fn test_parse_workspace_dep_with_registry() {
+        let ws = parse_workspace(&fixture("registry_not_inherited")).unwrap();
+        let ws_dep = ws.workspace_deps.get("my-crate").unwrap();
+        assert_eq!(ws_dep.registry.as_deref(), Some("my-registry"));
+    }
+
+    #[test]
+    fn test_parse_member_dep_with_registry() {
+        let ws = parse_workspace(&fixture("registry_promotion")).unwrap();
+        let dep = &ws.members[0].dependencies[0];
+        assert_eq!(dep.name, "my-crate");
+        assert_eq!(dep.registry.as_deref(), Some("my-registry"));
     }
 
     #[test]

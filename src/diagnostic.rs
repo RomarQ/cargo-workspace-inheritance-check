@@ -37,6 +37,8 @@ pub enum DiagnosticKind {
         members: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_registry: Option<String>,
     },
 }
 
@@ -68,6 +70,7 @@ impl Diagnostic {
                 count,
                 members,
                 suggested_version,
+                suggested_registry,
             } => {
                 let severity = match self.severity {
                     Severity::Error => "error",
@@ -81,9 +84,14 @@ impl Diagnostic {
                     lines.push(format!("  --> {m}"));
                 }
                 if let Some(ver) = suggested_version {
+                    let value = if let Some(reg) = suggested_registry {
+                        format!("{{ version = \"{ver}\", registry = \"{reg}\" }}")
+                    } else {
+                        format!("\"{ver}\"")
+                    };
                     lines.push(format!(
-                        "  hint: consider adding `{} = \"{}\"` to [workspace.dependencies]",
-                        self.dependency, ver,
+                        "  hint: consider adding `{} = {}` to [workspace.dependencies]",
+                        self.dependency, value,
                     ));
                 }
                 lines.join("\n")
@@ -195,6 +203,7 @@ mod tests {
                     "crates/node/Cargo.toml".into(),
                 ],
                 suggested_version: Some("0.9".into()),
+                suggested_registry: None,
             },
         };
         let output = d.format_human();
@@ -235,5 +244,45 @@ mod tests {
         assert_eq!(parsed["summary"]["errors"], 1);
         assert_eq!(parsed["summary"]["warnings"], 0);
         assert_eq!(parsed["diagnostics"][0]["check"], "not-inherited");
+    }
+
+    #[test]
+    fn test_promotion_candidate_with_registry_human_format() {
+        let d = Diagnostic {
+            severity: Severity::Warning,
+            dependency: "my-crate".into(),
+            kind: DiagnosticKind::PromotionCandidate {
+                count: 2,
+                members: vec!["crates/one/Cargo.toml".into()],
+                suggested_version: Some("1.0".into()),
+                suggested_registry: Some("my-registry".into()),
+            },
+        };
+        let output = d.format_human();
+        assert!(
+            output.contains("registry = \"my-registry\""),
+            "hint should include registry, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_report_json_with_registry() {
+        let report = DiagnosticReport::new(vec![Diagnostic {
+            severity: Severity::Warning,
+            dependency: "my-crate".into(),
+            kind: DiagnosticKind::PromotionCandidate {
+                count: 2,
+                members: vec!["crates/one/Cargo.toml".into()],
+                suggested_version: Some("1.0".into()),
+                suggested_registry: Some("my-registry".into()),
+            },
+        }]);
+        let json = report.format_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["diagnostics"][0]["suggested_registry"],
+            "my-registry"
+        );
+        assert_eq!(parsed["diagnostics"][0]["check"], "promotion-candidate");
     }
 }
