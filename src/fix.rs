@@ -120,10 +120,10 @@ pub fn apply_fixes(
         let mut modified = false;
         for_each_dep_table_mut(&mut doc, |table| {
             for dep_name in dep_names {
-                if let Some(key) = find_dep_key(table, dep_name) {
-                    if rewrite_dep_entry(table, &key) {
-                        modified = true;
-                    }
+                if let Some(key) = find_dep_key(table, dep_name)
+                    && rewrite_dep_entry(table, &key)
+                {
+                    modified = true;
                 }
             }
         });
