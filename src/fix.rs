@@ -141,8 +141,8 @@ fn fix_member_dep(manifest_path: &Path, dep_name: &str) -> Result<bool, String> 
 
 /// Rewrite a dependency entry to use `{ workspace = true }`.
 ///
-/// Strips `version` and `default-features` (which must be set at the workspace
-/// level to have any effect). Preserves other keys like `features` and `optional`.
+/// Strips `version`, `default-features`, and `registry` (which must be set at
+/// the workspace level). Preserves other keys like `features` and `optional`.
 fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
     let Some(item) = table.get_mut(key) else {
         return false;
@@ -173,7 +173,7 @@ fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
             if existing.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
                 return false;
             }
-            // Rebuild with workspace = true, dropping version and default-features
+            // Rebuild with workspace = true, dropping version, default-features, and registry
             let mut rebuilt = InlineTable::new();
             rebuilt.insert("workspace", Value::from(true));
             for (k, v) in existing.iter() {

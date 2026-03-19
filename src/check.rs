@@ -25,17 +25,9 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
 
-            if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name) {
-                // If registries differ, the workspace dep doesn't apply —
-                // treat as an independent dep eligible for promotion.
-                if dep.registry != ws_dep.registry {
-                    dep_usage
-                        .entry((lookup_name.to_string(), dep.registry.clone()))
-                        .or_default()
-                        .push((member_rel.clone(), dep.version.clone()));
-                    continue;
-                }
-
+            if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name)
+                && dep.registry == ws_dep.registry
+            {
                 let kind = match (&dep.version, &ws_dep.version) {
                     (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
                         version: dep.version.clone(),
