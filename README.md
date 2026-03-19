@@ -175,6 +175,22 @@ All inputs are optional:
 - run: cargo workspace-inheritance-check
 ```
 
+## Alternate Registry Support
+
+Dependencies that use [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry) are handled correctly:
+
+- A member dep like `serde = { version = "1.0", registry = "my-registry" }` will **not** match a workspace dep `serde = "1.0"` (default crates.io registry) — they are from different sources
+- Promotion candidates are grouped by name **and** registry — deps from different registries are never grouped together
+- `--fix` strips `registry` from member deps when converting to `{ workspace = true }` (the workspace dep owns the registry, just like it owns the version)
+- `--fix` carries `registry` into promoted workspace deps:
+
+```
+warning: `my-crate` appears in 2 crates but is not in [workspace.dependencies]
+  --> crates/one/Cargo.toml
+  --> crates/two/Cargo.toml
+  hint: consider adding `my-crate = { version = "1.0", registry = "my-registry" }` to [workspace.dependencies]
+```
+
 ## Dependency Sections Checked
 
 All dependency sections in member crates are checked:

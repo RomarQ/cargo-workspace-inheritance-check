@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Alternate registry support: dependencies using `registry = "my-registry"` are now handled correctly
+  - A member dep only matches a workspace dep if both use the same registry (or both use the default crates.io)
+  - Promotion candidates are grouped by `(name, registry)` pair — deps from different registries are not grouped together
+  - `--fix` strips `registry` from member deps when converting to `{ workspace = true }` (the workspace dep owns the registry)
+  - `--fix` carries `registry` into promoted workspace deps
+
 ## [1.1.2] - 2026-03-18
 
 ### Fixed
