@@ -4,17 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [1.2.0] - 2026-03-19
 
-## What's Changed
-* Simplify codebase: extract shared helpers and reduce duplication by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/13
-* refactor: simplify Diagnostic to enum, extract for_each_dep_table_mut by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/14
-* feat: alternate registry support by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/15
-* Simplify fix pipeline and reduce duplication by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/17
-
-
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.1.2...v1.2.0
 
-
-## [Unreleased]
+## What's Changed
+* Simplify codebase: extract shared helpers and reduce duplication (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/13, https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/17)
+* refactor: simplify Diagnostic to enum, extract for_each_dep_table_mut (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/14)
+* feat: alternate registry support (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/15)
 
 ### Added
 
