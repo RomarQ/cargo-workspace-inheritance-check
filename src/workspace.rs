@@ -278,14 +278,14 @@ mod tests {
 
     #[test]
     fn test_parse_workspace_dep_with_registry() {
-        let ws = parse_workspace(&fixture("registry_ws_dep")).unwrap();
+        let ws = parse_workspace(&fixture("registry_not_inherited")).unwrap();
         let ws_dep = ws.workspace_deps.get("my-crate").unwrap();
         assert_eq!(ws_dep.registry.as_deref(), Some("my-registry"));
     }
 
     #[test]
     fn test_parse_member_dep_with_registry() {
-        let ws = parse_workspace(&fixture("registry_member_dep")).unwrap();
+        let ws = parse_workspace(&fixture("registry_promotion")).unwrap();
         let dep = &ws.members[0].dependencies[0];
         assert_eq!(dep.name, "my-crate");
         assert_eq!(dep.registry.as_deref(), Some("my-registry"));
