@@ -4,14 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.3.0] - 2026-04-21
 
-## What's Changed
-* feat: ignore rules via [workspace.metadata.inheritance-check] by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/19
-
-
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.2.0...v1.3.0
-
-
-## [Unreleased]
 
 ### Added
 
