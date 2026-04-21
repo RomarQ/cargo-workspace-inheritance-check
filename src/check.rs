@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
-use crate::workspace::WorkspaceInfo;
+use crate::workspace::{IgnoreRule, WorkspaceInfo};
 
 /// Key: (dep_name, registry). Value: list of (member_path, version).
 type DepUsageMap = BTreeMap<(String, Option<String>), Vec<(String, Option<String>)>>;
+
+fn is_ignored(rules: &[IgnoreRule], dep: &str, member_manifest: &str) -> bool {
+    rules.iter().any(|r| r.matches(dep, member_manifest))
+}
 
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -24,6 +28,10 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
             }
 
             let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
+
+            if is_ignored(&workspace.ignore_rules, lookup_name, &member_rel) {
+                continue;
+            }
 
             if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name)
                 && dep.registry == ws_dep.registry

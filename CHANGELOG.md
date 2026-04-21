@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Ignore rules via `[workspace.metadata.inheritance-check]` in the root `Cargo.toml`:
+
+  ```toml
+  [workspace.metadata.inheritance-check]
+  ignore = [
+    { dependency = "rand", member = "crates/bar" }, # skip in a specific crate
+    { dependency = "openssl" },                     # skip everywhere
+  ]
+  ```
+
+  Ignored `(dependency, member)` pairs are suppressed from both reporting and `--fix`.
+  Without `member`, the rule applies to every crate and also drops the dependency
+  from promotion-candidate grouping. Both inline-array and
+  `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables syntax are
+  accepted.
+
 ## [1.2.0] - 2026-03-19
 
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.1.2...v1.2.0
