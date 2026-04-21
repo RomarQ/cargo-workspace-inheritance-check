@@ -7,6 +7,36 @@ pub struct WorkspaceInfo {
     pub root_path: PathBuf,
     pub workspace_deps: BTreeMap<String, WorkspaceDep>,
     pub members: Vec<MemberCrate>,
+    pub ignore_rules: Vec<IgnoreRule>,
+}
+
+/// Exemption declared in `[workspace.metadata.inheritance-check]`.
+///
+/// `dependency` is the crate name. `member` is the crate directory relative to the
+/// workspace root (e.g. `crates/bar`); when `None`, the rule applies to every member.
+#[derive(Debug, Clone)]
+pub struct IgnoreRule {
+    pub dependency: String,
+    pub member: Option<String>,
+}
+
+impl IgnoreRule {
+    /// Match a diagnostic's manifest path (e.g. `crates/bar/Cargo.toml`) against this
+    /// rule's member scope. Works with both forward and back slashes so Windows paths
+    /// match too.
+    pub fn matches(&self, dep_name: &str, member_manifest: &str) -> bool {
+        if self.dependency != dep_name {
+            return false;
+        }
+        let Some(scope) = &self.member else {
+            return true;
+        };
+        let scope = scope.trim_end_matches(['/', '\\']);
+        let normalized_member = member_manifest.replace('\\', "/");
+        let normalized_scope = scope.replace('\\', "/");
+        normalized_member == format!("{normalized_scope}/Cargo.toml")
+            || normalized_member.starts_with(&format!("{normalized_scope}/"))
+    }
 }
 
 pub struct WorkspaceDep {
@@ -111,6 +141,7 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .ok_or_else(|| format!("No [workspace] section in {}", root_toml_path.display()))?;
 
     let workspace_deps = parse_workspace_deps(workspace_table);
+    let ignore_rules = parse_ignore_rules(workspace_table);
 
     let member_patterns = get_string_array(workspace_table, "members");
     let exclude_patterns = get_string_array(workspace_table, "exclude");
@@ -130,7 +161,53 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         root_path: path.to_path_buf(),
         workspace_deps,
         members,
+        ignore_rules,
     })
+}
+
+fn parse_ignore_rules(workspace_table: &toml_edit::Table) -> Vec<IgnoreRule> {
+    let Some(ignore_item) = workspace_table
+        .get("metadata")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("inheritance-check"))
+        .and_then(|v| item_as_table_like(v))
+        .and_then(|t| t.get("ignore"))
+    else {
+        return Vec::new();
+    };
+
+    let mut rules = Vec::new();
+
+    // Inline form: `ignore = [ { dependency = "x", member = "y" }, ... ]`
+    if let Some(array) = ignore_item.as_array() {
+        for entry in array {
+            if let Some(inline) = entry.as_inline_table()
+                && let Some(rule) = rule_from_table_like(inline)
+            {
+                rules.push(rule);
+            }
+        }
+    }
+
+    // Array-of-tables form: `[[workspace.metadata.inheritance-check.ignore]]`
+    if let Some(tables) = ignore_item.as_array_of_tables() {
+        for table in tables {
+            if let Some(rule) = rule_from_table_like(table) {
+                rules.push(rule);
+            }
+        }
+    }
+
+    rules
+}
+
+fn rule_from_table_like(table: &dyn toml_edit::TableLike) -> Option<IgnoreRule> {
+    let dependency = table.get("dependency")?.as_str()?.to_string();
+    let member = table
+        .get("member")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Some(IgnoreRule { dependency, member })
 }
 
 fn get_string_array(table: &toml_edit::Table, key: &str) -> Vec<String> {

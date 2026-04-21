@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Ignore rules via `[workspace.metadata.inheritance-check]` in the root `Cargo.toml`:
+
+  ```toml
+  [workspace.metadata.inheritance-check]
+  ignore = [
+    { dependency = "rand", member = "crates/bar" }, # skip in a specific crate
+    { dependency = "openssl" },                     # skip everywhere
+  ]
+  ```
+
+  Ignored `(dependency, member)` pairs are suppressed from both reporting and `--fix`.
+  Without `member`, the rule applies to every crate and also drops the dependency
+  from promotion-candidate grouping. Both inline-array and
+  `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables syntax are
+  accepted.
+
 ## [1.2.0] - 2026-03-19
 
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.1.2...v1.2.0
@@ -10,14 +30,6 @@ All notable changes to this project will be documented in this file.
 * Simplify codebase: extract shared helpers and reduce duplication (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/13, https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/17)
 * refactor: simplify Diagnostic to enum, extract for_each_dep_table_mut (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/14)
 * feat: alternate registry support (https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/15)
-
-### Added
-
-- Alternate registry support: dependencies using `registry = "my-registry"` are now handled correctly
-  - A member dep only matches a workspace dep if both use the same registry (or both use the default crates.io)
-  - Promotion candidates are grouped by `(name, registry)` pair — deps from different registries are not grouped together
-  - `--fix` strips `registry` from member deps when converting to `{ workspace = true }` (the workspace dep owns the registry)
-  - `--fix` carries `registry` into promoted workspace deps
 
 ## [1.1.2] - 2026-03-18
 
