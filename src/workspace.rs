@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use serde::Deserialize;
 use toml_edit::{DocumentMut, Item};
 
 pub struct WorkspaceInfo {
@@ -143,26 +145,59 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let workspace_deps = parse_workspace_deps(workspace_table);
     let ignore_rules = parse_ignore_rules(workspace_table);
 
-    let member_patterns = get_string_array(workspace_table, "members");
-    let exclude_patterns = get_string_array(workspace_table, "exclude");
-
-    let member_paths = expand_members(path, &member_patterns, &exclude_patterns)?;
-
-    let mut members = Vec::new();
-    for member_path in member_paths {
-        let manifest_path = member_path.join("Cargo.toml");
-        match parse_member(&manifest_path) {
-            Ok(member) => members.push(member),
-            Err(e) => eprintln!("warning: skipping {}: {e}", manifest_path.display()),
-        }
-    }
+    let metadata = cargo_metadata(path)?;
+    let mut manifest_paths: Vec<PathBuf> = metadata
+        .packages
+        .into_iter()
+        .map(|p| p.manifest_path)
+        .collect();
+    manifest_paths.sort();
+    let members = manifest_paths
+        .iter()
+        .map(|p| parse_member(p))
+        .collect::<Result<_, _>>()?;
 
     Ok(WorkspaceInfo {
-        root_path: path.to_path_buf(),
+        root_path: metadata.workspace_root,
         workspace_deps,
         members,
         ignore_rules,
     })
+}
+
+/// The parts of `cargo metadata --no-deps` output that the check reads. With `--no-deps`,
+/// `packages` holds exactly the workspace members.
+#[derive(Deserialize)]
+struct Metadata {
+    workspace_root: PathBuf,
+    packages: Vec<MetadataPackage>,
+}
+
+#[derive(Deserialize)]
+struct MetadataPackage {
+    manifest_path: PathBuf,
+}
+
+/// Ask cargo for the member set, so it follows cargo's rules: the root package, path
+/// dependencies inside the root, and `exclude`.
+fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
+    let output = Command::new(cargo)
+        .args(["metadata", "--no-deps", "--offline", "--color", "never"])
+        .args(["--format-version", "1", "--manifest-path", "Cargo.toml"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("Failed to run cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed for {}:\n{}",
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim_end(),
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to read cargo metadata output: {e}"))
 }
 
 fn parse_ignore_rules(workspace_table: &toml_edit::Table) -> Vec<IgnoreRule> {
@@ -210,18 +245,6 @@ fn rule_from_table_like(table: &dyn toml_edit::TableLike) -> Option<IgnoreRule> 
     Some(IgnoreRule { dependency, member })
 }
 
-fn get_string_array(table: &toml_edit::Table, key: &str) -> Vec<String> {
-    table
-        .get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, WorkspaceDep> {
     let mut deps = BTreeMap::new();
     let Some(dep_table) = workspace_table
@@ -244,37 +267,6 @@ fn parse_workspace_deps(workspace_table: &toml_edit::Table) -> BTreeMap<String, 
         deps.insert(name.to_string(), WorkspaceDep { version, registry });
     }
     deps
-}
-
-fn expand_members(
-    root: &Path,
-    patterns: &[String],
-    excludes: &[String],
-) -> Result<Vec<PathBuf>, String> {
-    let mut paths = Vec::new();
-    for pattern in patterns {
-        let full_pattern = root.join(pattern).to_string_lossy().to_string();
-        let matches = glob::glob(&full_pattern)
-            .map_err(|e| format!("Invalid glob pattern '{pattern}': {e}"))?;
-        for entry in matches {
-            let entry = entry.map_err(|e| format!("Glob error: {e}"))?;
-            paths.push(entry);
-        }
-    }
-    if !excludes.is_empty() {
-        let mut excluded_paths = Vec::new();
-        for pattern in excludes {
-            let full_pattern = root.join(pattern).to_string_lossy().to_string();
-            if let Ok(matches) = glob::glob(&full_pattern) {
-                for entry in matches.flatten() {
-                    excluded_paths.push(entry);
-                }
-            }
-        }
-        paths.retain(|p| !excluded_paths.iter().any(|ex| p.starts_with(ex)));
-    }
-    paths.sort();
-    Ok(paths)
 }
 
 fn parse_member(manifest_path: &Path) -> Result<MemberCrate, String> {

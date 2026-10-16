@@ -1,0 +1,5 @@
+[registries.registry-a]
+index = "sparse+https://a.example.invalid/index/"
+
+[registries.registry-b]
+index = "sparse+https://b.example.invalid/index/"
