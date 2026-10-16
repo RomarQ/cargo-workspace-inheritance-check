@@ -14,7 +14,7 @@ const INHERITABLE_KEYS: [&str; 3] = ["features", "optional", "public"];
 
 /// The change that `--fix` makes for one finding.
 #[derive(Debug)]
-pub struct Fix {
+pub(crate) struct Fix {
     /// An entry to add to `[workspace.dependencies]` before the edits. When the root manifest
     /// already has that key, the whole fix is skipped.
     pub promotion: Option<Promotion>,
@@ -24,13 +24,15 @@ pub struct Fix {
     pub description: String,
 }
 
-/// An entry to add to `[workspace.dependencies]`.
+/// An entry to add to `[workspace.dependencies]`. Every promotion of one run names the same
+/// root manifest.
 #[derive(Debug)]
-pub struct Promotion {
+pub(crate) struct Promotion {
     pub root_manifest: PathBuf,
     pub key: String,
     pub version: String,
     pub registry: Option<String>,
+    /// `false` writes `default-features = false` on the entry.
     pub default_features: bool,
 }
 
@@ -54,7 +56,7 @@ impl Promotion {
 
 /// Rewrites one member entry to `{ workspace = true }`.
 #[derive(Debug)]
-pub struct Edit {
+pub(crate) struct Edit {
     pub manifest: PathBuf,
     pub table: DepTable,
     pub key: String,
@@ -70,6 +72,7 @@ pub struct FixSummary {
     pub fixed: Vec<String>,
     /// A `skipped:` line with the reason for each finding that was left as it is.
     pub skipped: Vec<String>,
+    /// The number of manifests written.
     pub files_modified: usize,
 }
 
@@ -135,7 +138,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
             });
             if !rewritten {
                 return Err(format!(
-                    "`{}` is no longer in {}. Run the check again.",
+                    "`{}` in {} changed after the check",
                     edit.key,
                     manifest.display(),
                 ));
@@ -193,19 +196,33 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
 
 /// Insert `promotion` into the root document. Returns `false` when the key already exists.
 fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<bool, String> {
-    let workspace = doc
-        .get_mut("workspace")
-        .and_then(Item::as_table_mut)
-        .ok_or("No [workspace] table in the root Cargo.toml")?;
-    let deps = workspace
-        .entry("dependencies")
-        .or_insert(toml_edit::table())
+    let no_workspace = "No [workspace] section in the root Cargo.toml";
+    let workspace = doc.get_mut("workspace").ok_or(no_workspace)?;
+    let inline_workspace = workspace.is_inline_table();
+    // An inline `workspace = { .. }` can hold only inline values.
+    let empty = if inline_workspace {
+        Item::Value(InlineTable::new().into())
+    } else {
+        toml_edit::table()
+    };
+    let workspace = workspace.as_table_like_mut().ok_or(no_workspace)?;
+    let deps = workspace.entry("dependencies").or_insert(empty);
+    let inline_deps = deps.is_inline_table();
+    let entries = deps
         .as_table_like_mut()
         .ok_or("[workspace.dependencies] is not a table")?;
-    if deps.contains_key(&promotion.key) {
+    if entries.contains_key(&promotion.key) {
         return Ok(false);
     }
-    deps.insert(&promotion.key, Item::Value(promotion.value()));
+    entries.insert(&promotion.key, Item::Value(promotion.value()));
+    // An inline table keeps the spacing of its old last value, so respace it. A standard table
+    // is left alone, because its `fmt` also drops comments.
+    if inline_deps {
+        entries.fmt();
+    }
+    if inline_workspace {
+        workspace.fmt();
+    }
     Ok(true)
 }
 
@@ -214,7 +231,7 @@ mod tests {
     use super::*;
     use crate::check::run_checks;
     use crate::workspace::parse_workspace;
-    use crate::{fixture, temp_workspace};
+    use crate::{add_root_package, fixture, temp_workspace};
 
     fn copy_fixture(name: &str) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
@@ -403,6 +420,27 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_skips_entry_whose_version_the_workspace_entry_lacks() {
+        let tmp = temp_workspace(
+            "core = { path = \"crates/core\" }",
+            &[
+                ("core", ""),
+                ("app", "core = { path = \"../core\", version = \"0.1\" }"),
+            ],
+        );
+        let before = read_file(&tmp, "crates/app/Cargo.toml");
+        let (summary, _) = fix(&tmp);
+        assert_eq!(
+            summary.skipped,
+            [
+                "skipped: `core` in crates/app/Cargo.toml requires version 0.1, but the workspace \
+                 entry has no version"
+            ]
+        );
+        assert_eq!(read_file(&tmp, "crates/app/Cargo.toml"), before);
+    }
+
+    #[test]
     fn test_fix_skips_promotion_with_different_versions() {
         let tmp = temp_workspace("", &[("a", "rand = \"0.7\""), ("b", "rand = \"0.8\"")]);
         let root = read_file(&tmp, "Cargo.toml");
@@ -453,20 +491,29 @@ mod tests {
     #[test]
     fn test_fix_promotion_into_a_root_that_is_also_a_member() {
         let tmp = temp_workspace("", &[("a", "anyhow = \"1.0\"")]);
-        let root = format!(
-            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\nanyhow = \"1.0\"\n\n{}",
-            read_file(&tmp, "Cargo.toml"),
-        );
-        std::fs::write(tmp.path().join("Cargo.toml"), root).unwrap();
-        std::fs::create_dir(tmp.path().join("src")).unwrap();
-        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        add_root_package(&tmp, "anyhow = \"1.0\"");
         let (_, after) = fix(&tmp);
         let root = read_file(&tmp, "Cargo.toml");
         assert!(root.contains("anyhow = \"1.0\""), "{root}");
         assert_eq!(
             entry_keys(&tmp, "Cargo.toml", &["dependencies", "anyhow"]),
             ["workspace"]
+        );
+        assert!(after.is_empty(), "{after:?}");
+    }
+
+    #[test]
+    fn test_fix_promotion_into_an_inline_workspace_table() {
+        let tmp = temp_workspace("", &[("a", "anyhow = \"1.0\""), ("b", "anyhow = \"1.0\"")]);
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "workspace = { members = [\"crates/*\"] }\n",
+        )
+        .unwrap();
+        let (_, after) = fix(&tmp);
+        assert_eq!(
+            read_file(&tmp, "Cargo.toml"),
+            "workspace = { members = [\"crates/*\"], dependencies = { anyhow = \"1.0\" } }\n"
         );
         assert!(after.is_empty(), "{after:?}");
     }

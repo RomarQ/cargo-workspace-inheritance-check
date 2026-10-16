@@ -17,14 +17,16 @@ pub struct WorkspaceInfo {
     pub workspace_deps: BTreeMap<String, DepSpec>,
     /// The members, sorted by manifest path.
     pub members: Vec<MemberCrate>,
+    /// The rules from `[workspace.metadata.inheritance-check]`.
     pub ignore_rules: Vec<IgnoreRule>,
 }
 
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
 ///
-/// `dependency` matches the dependency key or the package name. `member` is the crate
-/// directory relative to the workspace root (e.g. `crates/bar`); when `None`, the rule applies
-/// to every member.
+/// `dependency` matches the dependency key or the package name. `member` is relative to the
+/// workspace root. It is a crate directory (e.g. `crates/bar`), which also covers the crates
+/// below it, or a manifest path (e.g. `Cargo.toml` for the root package). `.` and `None` cover
+/// every member.
 #[derive(Debug, Clone)]
 pub struct IgnoreRule {
     pub dependency: String,
@@ -44,9 +46,13 @@ impl IgnoreRule {
         };
         let scope = scope.replace('\\', "/");
         let scope = scope.trim_start_matches("./").trim_end_matches('/');
-        member_manifest
-            .strip_prefix(scope)
-            .is_some_and(|rest| rest.starts_with('/'))
+        if scope.is_empty() || scope == "." {
+            return true;
+        }
+        member_manifest == scope
+            || member_manifest
+                .strip_prefix(scope)
+                .is_some_and(|rest| rest.starts_with('/'))
     }
 }
 
@@ -54,7 +60,8 @@ impl IgnoreRule {
 #[derive(Debug)]
 pub struct MemberCrate {
     pub manifest_path: PathBuf,
-    /// The entries that do not use `workspace = true`.
+    /// The entries that do not use `workspace = true`, without the path and git entries that
+    /// give no version.
     pub dependencies: Vec<MemberDep>,
 }
 
@@ -83,6 +90,7 @@ pub struct DepSpec {
     /// The `package` value, or the entry's key when it has none.
     pub package: String,
     pub source: DepSource,
+    /// The version requirement, or `None` when the entry gives none.
     pub version: Option<String>,
     /// The `default-features` value, which is `true` when the entry does not set it.
     pub default_features: bool,
@@ -91,10 +99,14 @@ pub struct DepSpec {
 /// Where a dependency comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepSource {
-    /// A registry, where `None` is crates.io.
+    /// A registry by name, where `None` is crates.io.
     Registry(Option<String>),
+    /// A registry by index URL, from `registry-index`.
+    RegistryIndex(String),
     /// A local path, resolved against the directory of the manifest that declares it.
     Path(PathBuf),
+    /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
+    /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
     Git {
         url: String,
         branch: Option<String>,
@@ -278,8 +290,15 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
+    // An unknown key, such as a misspelled `member`, or a `member` that is not a string makes
+    // the rule invalid, so a mistake never widens it to every crate.
+    if table
+        .iter()
+        .any(|(key, _)| key != "dependency" && key != "member")
+    {
+        return None;
+    }
     let dependency = table.get("dependency")?.as_str()?.to_string();
-    // A `member` that is not a string makes the rule invalid, so it never widens to every crate.
     let member = match table.get("member") {
         None => None,
         Some(member) => Some(member.as_str()?.to_string()),
@@ -343,14 +362,18 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         let path = manifest_dir.join(path);
         DepSource::Path(std::fs::canonicalize(&path).unwrap_or(path))
     } else if let Some(url) = str_field(t, "git") {
+        let url = url.strip_suffix('/').unwrap_or(&url);
         DepSource::Git {
-            url,
+            url: url.strip_suffix(".git").unwrap_or(url).to_string(),
             branch: str_field(t, "branch"),
             tag: str_field(t, "tag"),
             rev: str_field(t, "rev"),
         }
+    } else if let Some(index) = str_field(t, "registry-index") {
+        DepSource::RegistryIndex(index)
     } else {
-        DepSource::Registry(str_field(t, "registry"))
+        // Cargo reads the registry name `crates-io` as crates.io.
+        DepSource::Registry(str_field(t, "registry").filter(|r| r != "crates-io"))
     };
     let default_features = t
         .get("default-features")
@@ -403,12 +426,17 @@ mod tests {
 
     #[test]
     fn test_invalid_ignore_rule_is_an_error() {
-        let tmp = temp_workspace(
-            "\n[workspace.metadata.inheritance-check]\n\
-             ignore = [{ dependency = \"rand\", member = [\"crates/bar\"] }]",
-            &[("bar", "")],
-        );
-        let err = parse_workspace(tmp.path()).unwrap_err();
-        assert!(err.contains("Invalid `ignore`"), "{err}");
+        let rules = [
+            "{ dependency = \"rand\", member = [\"crates/bar\"] }",
+            "{ dependency = \"rand\", members = \"crates/bar\" }",
+        ];
+        for rule in rules {
+            let tmp = temp_workspace(
+                &format!("\n[workspace.metadata.inheritance-check]\nignore = [{rule}]"),
+                &[("bar", "")],
+            );
+            let err = parse_workspace(tmp.path()).unwrap_err();
+            assert!(err.contains("Invalid `ignore`"), "{rule}: {err}");
+        }
     }
 }
