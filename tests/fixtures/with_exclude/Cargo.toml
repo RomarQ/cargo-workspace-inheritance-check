@@ -1,6 +1,0 @@
-[workspace]
-members = ["crates/*"]
-exclude = ["crates/excluded"]
-
-[workspace.dependencies]
-serde = "1.0"
