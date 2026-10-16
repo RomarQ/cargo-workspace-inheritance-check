@@ -14,29 +14,37 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Clean workspace (should pass)
-        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        uses: ./
         with:
           path: tests/fixtures/valid_workspace
 
       - name: Not inherited (should fail)
-        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        id: not-inherited
+        continue-on-error: true
+        uses: ./
         with:
           path: tests/fixtures/not_inherited
-          no-fail: true
 
       - name: Version mismatch (should fail)
-        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        id: version-mismatch
+        continue-on-error: true
+        uses: ./
         with:
           path: tests/fixtures/version_mismatch
-          no-fail: true
+
+      - name: Check that the failing steps failed
+        if: steps.not-inherited.outcome != 'failure' || steps.version-mismatch.outcome != 'failure'
+        run: |
+          echo "The not-inherited and version-mismatch steps must fail."
+          exit 1
 
       - name: Promotion candidate (should warn)
-        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        uses: ./
         with:
           path: tests/fixtures/promotion_candidate
 
       - name: JSON output
-        uses: RomarQ/cargo-workspace-inheritance-check@v1
+        uses: ./
         with:
           path: tests/fixtures/not_inherited
           format: json
