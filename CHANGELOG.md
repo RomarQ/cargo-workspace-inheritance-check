@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules: the root package, path dependencies inside the workspace root, and `exclude` as cargo reads it. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
+- A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, path, or git). For a renamed entry, the JSON `dependency` value is the key.
+- Renamed, path, and git dependencies are not promotion candidates. A promotion counts each crate once, and it gives no suggested version when two versions tie.
+- `--fix` checks the workspace again after the fixes, prints that report in the selected `--format`, and exits 1 when errors remain, unless `--no-fail` is set.
+- An invalid ignore rule is an error. A rule's `dependency` matches the key or the package name, and `member` accepts a leading `./`.
+- `--promotion-threshold 0` is rejected.
+- toml_edit 0.25 reads TOML 1.1 manifests. The minimum supported Rust version is 1.88.
+
+### Fixed
+
+- `--fix` keeps what cargo resolves for each member. It removes every key that cargo ignores on an inherited entry, such as `path`, `git`, `package`, and `registry`, and keeps `features`, `optional`, and `public`.
+- `--fix` writes `default-features = true` where the workspace entry disables default features. It skips an entry that disables them when the workspace entry does not.
+- `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
+- `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
+- Inline tables are read at every level: dependency tables, target entries, `[workspace]` dependencies, and metadata. `[dev_dependencies]` and `[build_dependencies]` are checked.
+- `--path ./x` gives member paths relative to the workspace root.
+- The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. It installs with `--locked`.
+
+### Added
+
+- `--version`.
+
 ## [1.3.0] - 2026-04-21
 
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.2.0...v1.3.0

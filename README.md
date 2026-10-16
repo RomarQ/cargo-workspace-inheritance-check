@@ -42,6 +42,14 @@ warning: `serde_yaml` appears in 3 crates but is not in [workspace.dependencies]
 
 By default, this is reported as a **warning** and does not cause the tool to exit with a non-zero code. Use `--promotion-failure` to treat promotion candidates as errors.
 
+### How entries are compared
+
+- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo.
+- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
+- Versions are compared as written, so `"1"` and `"1.0"` count as a version mismatch.
+- A path or git dependency without a version is not checked.
+- A promotion candidate is a registry dependency that is not renamed. Each crate counts once, even when it lists the dependency in several sections.
+
 ## Installation
 
 ```bash
@@ -67,7 +75,7 @@ cargo workspace-inheritance-check
 | `--promotion-failure` | Promote promotion candidate warnings to errors, causing the tool to exit with code 1 when candidates are found. Useful in CI when you want to enforce that all shared dependencies are declared in `[workspace.dependencies]`. | `false` |
 | `--format <FORMAT>` | Output format: `human` or `json` | `human` |
 | `--no-fail` | Always exit with code 0, regardless of errors found. Useful when you want to see the report without failing a CI pipeline. | `false` |
-| `--fix` | Automatically fix all reported problems. For not-inherited and version-mismatch errors, replaces explicit versions with `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates all member crates. Other dependency attributes (e.g. `features`, `optional`) are preserved. If any member sets `default-features = false`, the workspace dependency will too (required for correctness — Cargo ignores member-level `default-features = false` unless the workspace dependency also sets it, and the 2024 edition makes this a hard error). | `false` |
+| `--fix` | Fix the reported problems, then check again and report the problems that remain. For not-inherited and version-mismatch errors, rewrites the entry to `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates the member crates. See [What `--fix` changes](#what---fix-changes). | `false` |
 
 ### Examples
 
@@ -91,14 +99,27 @@ cargo workspace-inheritance-check --no-fail
 cargo workspace-inheritance-check --fix
 ```
 
+## What `--fix` Changes
+
+`--fix` rewrites a member entry only when cargo then resolves the same dependency. The one exception is a version mismatch, where the member moves to the workspace version.
+
+- The member entry keeps `features`, `optional`, and `public`. The tool removes the keys that the workspace entry owns, such as `version`, `registry`, `path`, `git`, and `package`.
+- When the workspace entry sets `default-features = false` and the member uses default features, the tool writes `default-features = true` on the member.
+- When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
+- A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
+- The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
+
+Each skip prints a `skipped:` line with the reason. After the fixes, the tool checks the workspace again and prints the report in the selected `--format`.
+
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | No errors found (warnings are OK unless `--promotion-failure` is set) |
-| `1` | Errors found (or promotion warnings promoted to errors via `--promotion-failure`) |
+| `1` | Errors found (or promotion warnings promoted to errors via `--promotion-failure`), or the tool could not read the workspace or write a fix |
+| `2` | Invalid command-line arguments |
 
-`--no-fail` overrides the exit code to always be `0`.
+With `--fix`, the exit code reflects the errors that remain after the fixes. `--no-fail` makes the exit code `0` when errors are found. It does not change the exit code when the tool itself fails.
 
 ## Ignore Rules
 
@@ -116,6 +137,8 @@ ignore = [
 
 Ignored dependencies are skipped in both reporting and fixing.
 
+`dependency` matches the dependency key or the package name. `member` is the crate directory relative to the workspace root, and it also covers the crates below that directory. The `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables form works too. An invalid rule, such as one without a string `dependency`, is an error.
+
 ## JSON Output
 
 Use `--format json` for machine-readable output, useful for integrating with other tools or custom CI scripts:
@@ -125,8 +148,8 @@ Use `--format json` for machine-readable output, useful for integrating with oth
   "diagnostics": [
     {
       "severity": "error",
-      "check": "not-inherited",
       "dependency": "serde",
+      "check": "not-inherited",
       "version": "1.0",
       "member": "crates/foo/Cargo.toml",
       "workspace_version": "1.0"
@@ -199,3 +222,4 @@ All dependency sections in member crates are checked:
 - `[dev-dependencies]`
 - `[build-dependencies]`
 - `[target.'...'.dependencies]` (and dev/build variants)
+- `[dev_dependencies]` and `[build_dependencies]`, the spellings that cargo accepts before edition 2024
