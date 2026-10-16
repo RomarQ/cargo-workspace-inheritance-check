@@ -59,11 +59,11 @@ fn main() {
         }
     };
 
-    let mut diagnostics = check::run_checks(&workspace, cli.promotion_threshold);
+    let mut findings = check::run_checks(&workspace, cli.promotion_threshold);
 
     // Promote warnings to errors if requested
     if cli.promotion_failure {
-        for d in &mut diagnostics {
+        for d in findings.iter_mut().map(|f| &mut f.diagnostic) {
             if matches!(d.kind, DiagnosticKind::PromotionCandidate { .. }) {
                 d.severity = diagnostic::Severity::Error;
             }
@@ -71,18 +71,19 @@ fn main() {
     }
 
     if cli.fix {
-        match fix::apply_fixes(&cli.path, &diagnostics) {
+        match fix::apply_fixes(&findings) {
             Ok(summary) => {
-                for action in &summary.actions {
-                    eprintln!("{action}");
+                for line in summary.fixed.iter().chain(&summary.skipped) {
+                    eprintln!("{line}");
                 }
-                if summary.fixes_applied > 0 {
+                if summary.fixed.is_empty() {
+                    eprintln!("no fixable issues found");
+                } else {
                     eprintln!(
                         "\n{} fix(es) applied across {} file(s)",
-                        summary.fixes_applied, summary.files_modified,
+                        summary.fixed.len(),
+                        summary.files_modified,
                     );
-                } else {
-                    eprintln!("no fixable issues found");
                 }
             }
             Err(e) => {
@@ -93,7 +94,7 @@ fn main() {
         return;
     }
 
-    let report = DiagnosticReport::new(diagnostics);
+    let report = DiagnosticReport::new(findings.into_iter().map(|f| f.diagnostic).collect());
 
     match cli.format {
         OutputFormat::Json => println!("{}", report.format_json()),

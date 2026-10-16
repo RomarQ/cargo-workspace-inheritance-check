@@ -1,225 +1,488 @@
-use std::collections::{BTreeMap, HashMap};
+//! Compares each member's own dependency entries with `[workspace.dependencies]`, and decides
+//! what `--fix` does about each problem.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
-use crate::workspace::{IgnoreRule, WorkspaceInfo};
+use crate::fix::{Edit, Fix, Promotion};
+use crate::workspace::{DepSource, DepSpec, MemberDep, WorkspaceInfo, relative_manifest};
 
-/// Key: (dep_name, registry). Value: list of (member_path, version).
-type DepUsageMap = BTreeMap<(String, Option<String>), Vec<(String, Option<String>)>>;
-
-fn is_ignored(rules: &[IgnoreRule], dep: &str, member_manifest: &str) -> bool {
-    rules.iter().any(|r| r.matches(dep, member_manifest))
+/// A reported problem, with the fix that `--fix` applies or the reason it applies none.
+#[derive(Debug)]
+pub struct Finding {
+    pub diagnostic: Diagnostic,
+    pub fix: Result<Fix, String>,
 }
 
-pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    let mut dep_usage: DepUsageMap = BTreeMap::new();
+/// An entry that could move to `[workspace.dependencies]`: the member's relative manifest
+/// path, its manifest path, and the entry.
+type Usage<'a> = (String, &'a Path, &'a MemberDep);
+
+/// Check every member entry that does not inherit from the workspace.
+///
+/// An entry inherits by its key, as in cargo. So it is reported against the workspace entry
+/// with the same key, when both name the same package from the same source. A registry
+/// dependency whose key is not in the workspace is a promotion candidate when at least
+/// `promotion_threshold` crates declare it with the same key and registry.
+pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut candidates: BTreeMap<(&str, Option<&str>), Vec<Usage>> = BTreeMap::new();
 
     for member in &workspace.members {
-        let member_rel = member
-            .manifest_path
-            .strip_prefix(&workspace.root_path)
-            .unwrap_or(&member.manifest_path)
-            .to_string_lossy()
-            .to_string();
-
+        let member_rel = relative_manifest(&workspace.root_path, &member.manifest_path);
         for dep in &member.dependencies {
-            if dep.workspace {
+            let ignored = workspace
+                .ignore_rules
+                .iter()
+                .any(|r| r.matches(&dep.key, &dep.spec.package, &member_rel));
+            if ignored {
                 continue;
             }
-
-            let lookup_name = dep.package.as_deref().unwrap_or(&dep.name);
-
-            if is_ignored(&workspace.ignore_rules, lookup_name, &member_rel) {
-                continue;
-            }
-
-            if let Some(ws_dep) = workspace.workspace_deps.get(lookup_name)
-                && dep.registry == ws_dep.registry
-            {
-                let kind = match (&dep.version, &ws_dep.version) {
-                    (Some(dv), Some(wv)) if dv != wv => DiagnosticKind::VersionMismatch {
-                        version: dep.version.clone(),
-                        member: member_rel.clone(),
-                        workspace_version: ws_dep.version.clone(),
-                    },
-                    _ => DiagnosticKind::NotInherited {
-                        version: dep.version.clone(),
-                        member: member_rel.clone(),
-                        workspace_version: ws_dep.version.clone(),
-                    },
-                };
-                diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    dependency: lookup_name.to_string(),
-                    kind,
-                });
-            } else {
-                dep_usage
-                    .entry((lookup_name.to_string(), dep.registry.clone()))
-                    .or_default()
-                    .push((member_rel.clone(), dep.version.clone()));
-            }
-        }
-    }
-
-    for ((dep_name, registry), usages) in &dep_usage {
-        if usages.len() >= promotion_threshold {
-            let mut version_counts: HashMap<&str, usize> = HashMap::new();
-            for (_, ver) in usages {
-                if let Some(v) = ver.as_deref() {
-                    *version_counts.entry(v).or_default() += 1;
+            match workspace.workspace_deps.get(&dep.key) {
+                Some(ws) if ws.package == dep.spec.package && ws.source == dep.spec.source => {
+                    findings.push(not_inherited(dep, ws, &member.manifest_path, &member_rel));
+                }
+                // The workspace uses this key for another package or source, so the entry
+                // can neither inherit it nor be promoted under it.
+                Some(_) => {}
+                None => {
+                    if let DepSource::Registry(registry) = &dep.spec.source
+                        && dep.spec.package == dep.key
+                    {
+                        candidates
+                            .entry((&dep.key, registry.as_deref()))
+                            .or_default()
+                            .push((member_rel.clone(), &member.manifest_path, dep));
+                    }
                 }
             }
-            let suggested_version = version_counts
-                .into_iter()
-                .max_by(|(v1, c1), (v2, c2)| c1.cmp(c2).then_with(|| v1.cmp(v2)))
-                .map(|(v, _)| v.to_string());
-
-            diagnostics.push(Diagnostic {
-                severity: Severity::Warning,
-                dependency: dep_name.clone(),
-                kind: DiagnosticKind::PromotionCandidate {
-                    count: usages.len(),
-                    members: usages.iter().map(|(m, _)| m.clone()).collect(),
-                    suggested_version,
-                    suggested_registry: registry.clone(),
-                },
-            });
         }
     }
 
-    diagnostics
+    let root_manifest = workspace.root_path.join("Cargo.toml");
+    for ((key, registry), usages) in candidates {
+        let mut members: Vec<&str> = usages.iter().map(|(m, ..)| m.as_str()).collect();
+        // A member's usages are next to each other, because members are checked in turn.
+        members.dedup();
+        if members.len() < promotion_threshold {
+            continue;
+        }
+        let diagnostic = Diagnostic {
+            severity: Severity::Warning,
+            dependency: key.to_string(),
+            kind: DiagnosticKind::PromotionCandidate {
+                count: members.len(),
+                members: members.iter().map(|m| m.to_string()).collect(),
+                suggested_version: most_common_version(&usages),
+                suggested_registry: registry.map(String::from),
+            },
+        };
+        let fix = promotion_fix(key, registry, &usages, &members, &root_manifest);
+        findings.push(Finding { diagnostic, fix });
+    }
+
+    findings
+}
+
+fn not_inherited(dep: &MemberDep, ws: &DepSpec, manifest: &Path, member_rel: &str) -> Finding {
+    let kind = match (&dep.spec.version, &ws.version) {
+        (Some(version), Some(ws_version)) if version != ws_version => {
+            DiagnosticKind::VersionMismatch {
+                version: dep.spec.version.clone(),
+                member: member_rel.to_string(),
+                workspace_version: ws.version.clone(),
+            }
+        }
+        _ => DiagnosticKind::NotInherited {
+            version: dep.spec.version.clone(),
+            member: member_rel.to_string(),
+            workspace_version: ws.version.clone(),
+        },
+    };
+    let key = &dep.key;
+    let fix = if !dep.spec.default_features && ws.default_features {
+        Err(format!(
+            "`{key}` in {member_rel} sets `default-features = false`, but the workspace entry \
+             enables default features. Set `default-features = false` on the workspace entry first."
+        ))
+    } else {
+        let description = match &kind {
+            DiagnosticKind::VersionMismatch {
+                version,
+                workspace_version,
+                ..
+            } => format!(
+                "`{key}` in {member_rel} changed from {} to {} (workspace version)",
+                version.as_deref().unwrap_or("?"),
+                workspace_version.as_deref().unwrap_or("?"),
+            ),
+            _ => format!("`{key}` in {member_rel} now uses workspace inheritance"),
+        };
+        Ok(Fix {
+            promotion: None,
+            edits: vec![edit(manifest, dep, ws.default_features)],
+            description,
+        })
+    };
+    let diagnostic = Diagnostic {
+        severity: Severity::Error,
+        dependency: key.clone(),
+        kind,
+    };
+    Finding { diagnostic, fix }
+}
+
+/// Promote only a version that every usage already declares, so `--fix` changes no member's
+/// version requirement.
+fn promotion_fix(
+    key: &str,
+    registry: Option<&str>,
+    usages: &[Usage],
+    members: &[&str],
+    root_manifest: &Path,
+) -> Result<Fix, String> {
+    let versions: BTreeSet<Option<&str>> = usages
+        .iter()
+        .map(|(.., dep)| dep.spec.version.as_deref())
+        .collect();
+    let version = match versions.into_iter().collect::<Vec<_>>()[..] {
+        [Some(version)] => version,
+        [None] => {
+            return Err(format!(
+                "`{key}` is not promoted, because no member gives a version"
+            ));
+        }
+        _ => {
+            let listed: Vec<String> = usages
+                .iter()
+                .map(|(m, _, dep)| format!("{m} ({})", dep.spec.version.as_deref().unwrap_or("*")))
+                .collect();
+            return Err(format!(
+                "`{key}` is not promoted, because members use different versions: {}",
+                listed.join(", "),
+            ));
+        }
+    };
+    // Cargo ignores or rejects a member's `default-features = false` unless the workspace
+    // entry also sets it, so one such member decides the workspace entry.
+    let default_features = usages.iter().all(|(.., dep)| dep.spec.default_features);
+    let promotion = Promotion {
+        root_manifest: root_manifest.to_path_buf(),
+        key: key.to_string(),
+        version: version.to_string(),
+        registry: registry.map(String::from),
+        default_features,
+    };
+    let description = format!(
+        "`{key} = {}` added to [workspace.dependencies], updated: {}",
+        promotion.value(),
+        members.join(", "),
+    );
+    Ok(Fix {
+        promotion: Some(promotion),
+        edits: usages
+            .iter()
+            .map(|(_, manifest, dep)| edit(manifest, dep, default_features))
+            .collect(),
+        description,
+    })
+}
+
+fn edit(manifest: &Path, dep: &MemberDep, ws_default_features: bool) -> Edit {
+    Edit {
+        manifest: manifest.to_path_buf(),
+        table: dep.table.clone(),
+        key: dep.key.clone(),
+        enable_default_features: dep.spec.default_features && !ws_default_features,
+    }
+}
+
+/// The version that most usages declare, or `None` when no version or several versions
+/// share the highest count.
+fn most_common_version(usages: &[Usage]) -> Option<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (.., dep) in usages {
+        if let Some(version) = dep.spec.version.as_deref() {
+            *counts.entry(version).or_default() += 1;
+        }
+    }
+    let highest = *counts.values().max()?;
+    let mut top = counts.into_iter().filter(|&(_, count)| count == highest);
+    let (version, _) = top.next()?;
+    top.next().is_none().then(|| version.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture;
     use crate::workspace::parse_workspace;
+    use crate::{fixture, temp_workspace};
+
+    fn check(root: &Path, promotion_threshold: usize) -> Vec<Diagnostic> {
+        let ws = parse_workspace(root).unwrap();
+        run_checks(&ws, promotion_threshold)
+            .into_iter()
+            .map(|f| f.diagnostic)
+            .collect()
+    }
+
+    /// The (dependency, member) of each error, and (dependency, "promotion") of each
+    /// promotion candidate.
+    fn summarize(diags: &[Diagnostic]) -> Vec<(&str, &str)> {
+        diags
+            .iter()
+            .map(|d| match &d.kind {
+                DiagnosticKind::NotInherited { member, .. }
+                | DiagnosticKind::VersionMismatch { member, .. } => {
+                    (d.dependency.as_str(), member.as_str())
+                }
+                DiagnosticKind::PromotionCandidate { .. } => (d.dependency.as_str(), "promotion"),
+            })
+            .collect()
+    }
 
     #[test]
     fn test_valid_workspace_no_diagnostics() {
-        let ws = parse_workspace(&fixture("valid_workspace")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert!(diags.is_empty());
+        assert!(check(&fixture("valid_workspace"), 2).is_empty());
     }
 
     #[test]
     fn test_not_inherited() {
-        let ws = parse_workspace(&fixture("not_inherited")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].dependency, "serde");
+        let diags = check(&fixture("not_inherited"), 2);
+        assert_eq!(summarize(&diags), [("serde", "crates/foo/Cargo.toml")]);
         assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
     }
 
     #[test]
     fn test_version_mismatch() {
-        let ws = parse_workspace(&fixture("version_mismatch")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].dependency, "rand");
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::VersionMismatch { .. }
-        ));
-        if let DiagnosticKind::VersionMismatch {
-            version,
-            workspace_version,
-            ..
-        } = &diags[0].kind
-        {
-            assert_eq!(version.as_deref(), Some("0.7"));
-            assert_eq!(workspace_version.as_deref(), Some("0.8"));
-        }
+        let diags = check(&fixture("version_mismatch"), 2);
+        let [
+            Diagnostic {
+                dependency,
+                kind:
+                    DiagnosticKind::VersionMismatch {
+                        version,
+                        workspace_version,
+                        ..
+                    },
+                ..
+            },
+        ] = &diags[..]
+        else {
+            panic!("{diags:?}");
+        };
+        assert_eq!(dependency, "rand");
+        assert_eq!(version.as_deref(), Some("0.7"));
+        assert_eq!(workspace_version.as_deref(), Some("0.8"));
     }
 
     #[test]
     fn test_promotion_candidate() {
-        let ws = parse_workspace(&fixture("promotion_candidate")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].dependency, "serde_yaml");
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::PromotionCandidate { .. }
-        ));
-        if let DiagnosticKind::PromotionCandidate { count, .. } = &diags[0].kind {
-            assert_eq!(*count, 2);
-        }
-    }
-
-    #[test]
-    fn test_promotion_threshold_filters() {
-        let ws = parse_workspace(&fixture("promotion_candidate")).unwrap();
-        let diags = run_checks(&ws, 3);
-        assert!(
-            diags.is_empty(),
-            "threshold 3 should filter out serde_yaml appearing in 2 crates"
-        );
-    }
-
-    #[test]
-    fn test_exclude_not_checked() {
-        let ws = parse_workspace(&fixture("with_exclude")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert!(
-            diags.is_empty(),
-            "excluded member should not generate diagnostics"
-        );
+        let diags = check(&fixture("promotion_candidate"), 2);
+        let [
+            Diagnostic {
+                dependency,
+                kind: DiagnosticKind::PromotionCandidate { count, .. },
+                ..
+            },
+        ] = &diags[..]
+        else {
+            panic!("{diags:?}");
+        };
+        assert_eq!(dependency, "serde_yaml");
+        assert_eq!(*count, 2);
     }
 
     #[test]
     fn test_target_specific_not_inherited() {
-        let ws = parse_workspace(&fixture("target_deps")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].dependency, "winapi");
-        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
+        let diags = check(&fixture("target_deps"), 2);
+        assert_eq!(summarize(&diags), [("winapi", "crates/plat/Cargo.toml")]);
     }
 
     #[test]
-    fn test_registry_mismatch_not_flagged_as_not_inherited() {
-        let ws = parse_workspace(&fixture("registry_mismatch")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert!(
-            diags.is_empty(),
-            "dep from different registry should not match workspace dep: {diags:?}"
-        );
+    fn test_registry_mismatch_neither_matched_nor_promoted() {
+        let diags = check(&fixture("registry_mismatch"), 1);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn test_promotion_candidate_with_registry() {
-        let ws = parse_workspace(&fixture("registry_promotion")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::PromotionCandidate { .. }
-        ));
-        if let DiagnosticKind::PromotionCandidate {
-            suggested_registry, ..
-        } = &diags[0].kind
-        {
-            assert_eq!(suggested_registry.as_deref(), Some("my-registry"));
-        }
+        let diags = check(&fixture("registry_promotion"), 2);
+        let [
+            Diagnostic {
+                kind:
+                    DiagnosticKind::PromotionCandidate {
+                        suggested_registry, ..
+                    },
+                ..
+            },
+        ] = &diags[..]
+        else {
+            panic!("{diags:?}");
+        };
+        assert_eq!(suggested_registry.as_deref(), Some("my-registry"));
     }
 
     #[test]
     fn test_different_registries_not_grouped_for_promotion() {
-        let ws = parse_workspace(&fixture("registry_different")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert!(
-            diags.is_empty(),
-            "deps from different registries should not be grouped: {diags:?}"
-        );
+        let diags = check(&fixture("registry_different"), 2);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn test_same_registry_flagged_as_not_inherited() {
-        let ws = parse_workspace(&fixture("registry_not_inherited")).unwrap();
-        let diags = run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1, "same registry should match: {diags:?}");
-        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
+        let diags = check(&fixture("registry_not_inherited"), 2);
+        assert_eq!(summarize(&diags), [("my-crate", "crates/app/Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_root_package_is_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nserde = \"1.0\"\n\n[workspace]\n\n\
+             [workspace.dependencies]\nserde = \"1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        let diags = check(tmp.path(), 2);
+        assert_eq!(summarize(&diags), [("serde", "Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_other_sources_are_neither_matched_nor_promoted() {
+        let tmp = temp_workspace(
+            "core = { path = \"crates/core\", version = \"0.1\" }\nlocal = \"0.1\"",
+            &[
+                ("core", ""),
+                ("local", ""),
+                ("other", ""),
+                (
+                    "a",
+                    "core = { path = \"../core\", version = \"0.1\" }\n\
+                     local = { path = \"../local\", version = \"0.1\" }\n\
+                     other = { path = \"../other\", version = \"0.1\" }",
+                ),
+                (
+                    "b",
+                    "local = { path = \"../local\", version = \"0.1\" }\n\
+                     other = { path = \"../other\", version = \"0.1\" }",
+                ),
+            ],
+        );
+        let diags = check(tmp.path(), 2);
+        assert_eq!(summarize(&diags), [("core", "crates/a/Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_renamed_deps_follow_the_key() {
+        let tmp = temp_workspace(
+            "serde1 = { package = \"serde\", version = \"1.0\" }\n\
+             md5 = { package = \"md-5\", version = \"0.10\" }\nrand = \"0.8\"",
+            &[
+                (
+                    "a",
+                    "serde1 = { package = \"serde\", version = \"1.0\" }\nmd5 = \"0.7\"\n\
+                     rand_old = { package = \"rand\", version = \"0.7\" }",
+                ),
+                ("b", "rand_old = { package = \"rand\", version = \"0.7\" }"),
+            ],
+        );
+        let diags = check(tmp.path(), 2);
+        assert_eq!(summarize(&diags), [("serde1", "crates/a/Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_ignore_rules() {
+        let tmp = temp_workspace(
+            "rand = \"0.8\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
+             { dependency = \"rand\", member = \"crates/bar\" },\n\
+             { dependency = \"rand\", member = \"./crates/baz/\" },\n\
+             { dependency = \"openssl\" },\n]",
+            &[
+                ("bar", "rand = \"0.7\"\nopenssl = \"0.10\""),
+                ("barista", "rand = \"0.7\"\nopenssl = \"0.10\""),
+                ("baz", "rand = \"0.7\""),
+            ],
+        );
+        let diags = check(tmp.path(), 2);
+        assert_eq!(summarize(&diags), [("rand", "crates/barista/Cargo.toml")]);
+    }
+
+    #[test]
+    fn test_promotion_counts_crates_not_sections() {
+        let tmp = temp_workspace(
+            "",
+            &[("a", "tokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"")],
+        );
+        let diags = check(tmp.path(), 2);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn test_suggested_version_is_most_common_and_none_on_a_tie() {
+        let tmp = temp_workspace(
+            "",
+            &[
+                ("a", "rand = \"0.9\"\nitertools = \"0.10\""),
+                ("b", "rand = \"0.9\"\nitertools = \"0.9\""),
+                ("c", "rand = \"0.8\""),
+            ],
+        );
+        let diags = check(tmp.path(), 2);
+        let suggested: Vec<_> = diags
+            .iter()
+            .map(|d| match &d.kind {
+                DiagnosticKind::PromotionCandidate {
+                    suggested_version, ..
+                } => (d.dependency.as_str(), suggested_version.as_deref()),
+                _ => panic!("{diags:?}"),
+            })
+            .collect();
+        assert_eq!(suggested, [("itertools", None), ("rand", Some("0.9"))]);
+    }
+
+    #[test]
+    fn test_dev_and_build_dependencies_checked() {
+        let tmp = temp_workspace(
+            "serde = \"1.0\"\ncc = \"1.0\"",
+            &[(
+                "app",
+                "\n[dev-dependencies]\nserde = \"1.0\"\n\n[build_dependencies]\ncc = \"1.0\"",
+            )],
+        );
+        let diags = check(tmp.path(), 2);
+        let mut found = summarize(&diags);
+        found.sort();
+        let app = "crates/app/Cargo.toml";
+        assert_eq!(found, [("cc", app), ("serde", app)]);
+    }
+
+    #[test]
+    fn test_inline_tables_are_read() {
+        let tmp = temp_workspace(
+            "serde = \"1.0\"",
+            &[
+                (
+                    "a",
+                    "\n[target.'cfg(unix)']\ndependencies = { serde = \"1.0\" }",
+                ),
+                (
+                    "b",
+                    "\n[target]\n\"cfg(unix)\" = { dependencies = { serde = \"1.0\" } }",
+                ),
+            ],
+        );
+        let diags = check(tmp.path(), 2);
+        assert_eq!(
+            summarize(&diags),
+            [
+                ("serde", "crates/a/Cargo.toml"),
+                ("serde", "crates/b/Cargo.toml")
+            ]
+        );
     }
 }
