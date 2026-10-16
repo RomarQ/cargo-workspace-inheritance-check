@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked.
 - `--path ./x` gives member paths relative to the workspace root.
+- The promotion warning for one crate says `appears in 1 crate`.
 - The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. It installs with `--locked`.
 
 ### Added
