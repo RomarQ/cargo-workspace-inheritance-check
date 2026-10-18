@@ -231,7 +231,9 @@ struct MetadataPackage {
 }
 
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = std::env::var_os("CARGO")
+        .filter(|cargo| !cargo.is_empty())
+        .unwrap_or_else(|| "cargo".into());
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
     let output = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--offline", "--color", "never"])
@@ -242,8 +244,10 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
             let cargo = cargo.to_string_lossy();
             let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
             if e.kind() == ErrorKind::NotFound {
-                message
-                    .push_str(". The tool needs cargo: put it on PATH, or set CARGO to its path");
+                message.push_str(
+                    ". The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo \
+                     on PATH",
+                );
             }
             message
         })?;
