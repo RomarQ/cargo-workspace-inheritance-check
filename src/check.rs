@@ -498,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn test_shadowed_underscore_table_is_skipped() {
+        let tmp = temp_workspace(
+            "serde = \"1.0\"\ncc = \"1.0\"",
+            &[(
+                "app",
+                "\n[dev-dependencies]\nserde = \"1.0\"\n\n[dev_dependencies]\ncc = \"1.0\"\n\n\
+                 [target.'cfg(unix)'.dev_dependencies]\ncc = \"1.0\"",
+            )],
+        );
+        let diags = check(tmp.path(), 2);
+        let app = "crates/app/Cargo.toml";
+        assert_eq!(summarize(&diags), [("serde", app), ("cc", app)]);
+    }
+
+    #[test]
     fn test_inline_tables_are_read() {
         let tmp = temp_workspace(
             "serde = \"1.0\"",

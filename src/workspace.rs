@@ -169,6 +169,10 @@ fn dep_tables(doc: &DocumentMut) -> impl Iterator<Item = (DepTable, &dyn TableLi
         .chain(targets)
         .flat_map(|(target, scope)| {
             DEP_KINDS.into_iter().filter_map(move |kind| {
+                // Cargo ignores an underscore table when its hyphen spelling is in the same scope.
+                if kind.contains('_') && scope.contains_key(&kind.replace('_', "-")) {
+                    return None;
+                }
                 let table = scope.get(kind)?.as_table_like()?;
                 let target = target.map(String::from);
                 Some((DepTable { target, kind }, table))
