@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::fix::dep_value;
+use crate::check::dep_value;
 
 /// How serious a [`Diagnostic`] is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,7 +26,7 @@ pub struct Diagnostic {
 
 /// What the check found. The JSON output names the variant in its `check` field.
 ///
-/// Each `member` is a manifest path from [`crate::workspace::relative_manifest`].
+/// Each `member` is a manifest path as in [`crate::workspace::MemberDep::member`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "check", rename_all = "kebab-case")]
 pub enum DiagnosticKind {

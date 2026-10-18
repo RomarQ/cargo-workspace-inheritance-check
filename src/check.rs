@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use toml_edit::{InlineTable, Value};
+
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::fix::{Edit, Fix, Promotion};
 use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
@@ -17,19 +19,15 @@ pub struct Finding {
 
 /// Check every member entry that does not inherit from the workspace.
 ///
-/// An entry inherits by its key, as in cargo. So it is reported against the workspace entry
-/// with the same key, when both name the same package from the same source. A promotion
-/// candidate is an entry from crates.io or a named registry, with no rename and a key that the
-/// workspace does not have. At least `promotion_threshold` crates must declare it with the same
-/// registry. Entries that an ignore rule covers are skipped.
+/// An entry inherits by its key, as in cargo. So it is reported against the workspace entry with
+/// the same key, when both name the same package from the same source. A promotion candidate is an
+/// entry from crates.io or a named registry, with no rename and a key that the workspace does not
+/// have. At least `promotion_threshold` crates must declare it with the same registry.
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut candidates: BTreeMap<(&str, Option<&str>), Vec<&MemberDep>> = BTreeMap::new();
 
     for dep in &workspace.member_deps {
-        if workspace.ignore_rules.iter().any(|rule| rule.matches(dep)) {
-            continue;
-        }
         match workspace.workspace_deps.get(&dep.key) {
             Some(ws) if ws.package == dep.spec.package && ws.source == dep.spec.source => {
                 findings.push(not_inherited(dep, ws));
@@ -129,11 +127,8 @@ fn promotion_fix(
     members: &[&str],
     root_manifest: &Path,
 ) -> Result<Fix, String> {
-    let first = usages[0].spec.version.as_deref();
-    if usages
-        .iter()
-        .any(|dep| dep.spec.version.as_deref() != first)
-    {
+    let first = &usages[0].spec.version;
+    if usages.iter().any(|dep| &dep.spec.version != first) {
         let listed: Vec<String> = usages
             .iter()
             .map(|dep| {
@@ -154,20 +149,17 @@ fn promotion_fix(
     // Cargo ignores or rejects a member's `default-features = false` unless the workspace
     // entry also sets it, so one such member decides the workspace entry.
     let default_features = usages.iter().all(|dep| dep.spec.default_features);
-    let promotion = Promotion {
-        root_manifest: root_manifest.to_path_buf(),
-        key: key.to_string(),
-        version: version.to_string(),
-        registry: registry.map(String::from),
-        default_features,
-    };
+    let value = dep_value(version, registry, default_features);
     let description = format!(
-        "`{key} = {}` added to [workspace.dependencies], updated: {}",
-        promotion.value(),
+        "`{key} = {value}` added to [workspace.dependencies], updated: {}",
         members.join(", "),
     );
     Ok(Fix {
-        promotion: Some(promotion),
+        promotion: Some(Promotion {
+            root_manifest: root_manifest.to_path_buf(),
+            key: key.to_string(),
+            value,
+        }),
         edits: usages
             .iter()
             .map(|dep| edit(dep, default_features))
@@ -176,11 +168,25 @@ fn promotion_fix(
     })
 }
 
+/// A `[workspace.dependencies]` value: the bare version, or an inline table with the other keys.
+pub(crate) fn dep_value(version: &str, registry: Option<&str>, default_features: bool) -> Value {
+    if default_features && registry.is_none() {
+        return version.into();
+    }
+    let mut table = InlineTable::new();
+    table.insert("version", version.into());
+    if !default_features {
+        table.insert("default-features", false.into());
+    }
+    if let Some(registry) = registry {
+        table.insert("registry", registry.into());
+    }
+    Value::InlineTable(table)
+}
+
 fn edit(dep: &MemberDep, ws_default_features: bool) -> Edit {
     Edit {
-        manifest: dep.manifest.clone(),
-        table: dep.table.clone(),
-        key: dep.key.clone(),
+        dep: dep.clone(),
         enable_default_features: dep.spec.default_features && !ws_default_features,
     }
 }

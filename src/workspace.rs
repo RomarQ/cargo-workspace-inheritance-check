@@ -15,11 +15,9 @@ pub struct WorkspaceInfo {
     pub root_path: PathBuf,
     /// The entries of `[workspace.dependencies]`, by key.
     pub workspace_deps: BTreeMap<String, DepSpec>,
-    /// The member entries that do not use `workspace = true`, without the path and git entries
-    /// that give no version. They are grouped by member, in manifest path order.
+    /// The member entries without `workspace = true` that no ignore rule covers, grouped by member
+    /// in manifest path order. Path and git entries that give no version are left out.
     pub member_deps: Vec<MemberDep>,
-    /// The rules from `[workspace.metadata.inheritance-check]`.
-    pub ignore_rules: Vec<IgnoreRule>,
 }
 
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
@@ -28,15 +26,13 @@ pub struct WorkspaceInfo {
 /// workspace root. It is a crate directory (e.g. `crates/bar`), which also covers the crates
 /// below it, or a manifest path (e.g. `Cargo.toml` for the root package). `.` and `None` cover
 /// every member.
-#[derive(Debug, Clone)]
-pub struct IgnoreRule {
-    pub dependency: String,
-    pub member: Option<String>,
+struct IgnoreRule {
+    dependency: String,
+    member: Option<String>,
 }
 
 impl IgnoreRule {
-    /// Whether the rule covers `dep`.
-    pub fn matches(&self, dep: &MemberDep) -> bool {
+    fn matches(&self, dep: &MemberDep) -> bool {
         if self.dependency != dep.key && self.dependency != dep.spec.package {
             return false;
         }
@@ -52,10 +48,11 @@ impl IgnoreRule {
 }
 
 /// A dependency entry that a member declares instead of inheriting it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MemberDep {
     pub manifest: PathBuf,
-    /// The member's manifest path from [`relative_manifest`], which the diagnostics show.
+    /// The manifest path, relative to the workspace root when the member is inside it, with
+    /// `/` separators on every OS.
     pub member: String,
     pub table: DepTable,
     pub key: String,
@@ -138,13 +135,6 @@ pub(crate) fn write_manifest(path: &Path, doc: &DocumentMut) -> Result<(), Strin
         .map_err(|e| format!("Failed to write {}: {e}", path.display()))
 }
 
-/// `manifest` relative to `root`, with `/` separators, so that the output is the same on
-/// every OS.
-pub fn relative_manifest(root: &Path, manifest: &Path) -> String {
-    let relative = manifest.strip_prefix(root).unwrap_or(manifest);
-    relative.to_string_lossy().replace(MAIN_SEPARATOR, "/")
-}
-
 /// Every dependency table in a document, top-level and per target.
 fn dep_tables(doc: &DocumentMut) -> impl Iterator<Item = (DepTable, &dyn TableLike)> {
     let targets = doc
@@ -211,23 +201,20 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .collect();
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
-    let metadata = cargo_metadata(path)?;
-    let mut manifests: Vec<PathBuf> = metadata
+    let mut metadata = cargo_metadata(path)?;
+    metadata
         .packages
-        .into_iter()
-        .map(|p| p.manifest_path)
-        .collect();
-    manifests.sort();
+        .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
     let mut member_deps = Vec::new();
-    for manifest in manifests {
-        member_deps.extend(parse_member(&metadata.workspace_root, manifest)?);
+    for MetadataPackage { manifest_path } in metadata.packages {
+        member_deps.extend(parse_member(&metadata.workspace_root, manifest_path)?);
     }
+    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep)));
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,
         workspace_deps,
         member_deps,
-        ignore_rules,
     })
 }
 
@@ -271,7 +258,6 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
     else {
         return Ok(Vec::new());
     };
-    // `ignore = [{ .. }]` holds inline tables; `[[...ignore]]` is an array of tables.
     let rules = match ignore {
         Item::Value(Value::Array(array)) => array
             .iter()
@@ -307,7 +293,8 @@ fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String
     let manifest_dir = manifest
         .parent()
         .expect("a manifest path ends in Cargo.toml");
-    let member = relative_manifest(root, &manifest);
+    let relative = manifest.strip_prefix(root).unwrap_or(&manifest);
+    let member = relative.to_string_lossy().replace(MAIN_SEPARATOR, "/");
     let mut deps = Vec::new();
     for (table, entries) in dep_tables(&doc) {
         for (key, item) in entries.iter() {

@@ -1,12 +1,12 @@
 //! Writes the fixes that [`crate::check::run_checks`] plans.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
 
 use crate::check::Finding;
-use crate::workspace::{DepTable, dep_table_mut, read_manifest, write_manifest};
+use crate::workspace::{MemberDep, dep_table_mut, read_manifest, write_manifest};
 
 /// Keys that cargo reads on an entry with `workspace = true`. It ignores any other key with an
 /// "unused manifest key" warning, and `default-features` has its own rule in [`Edit`].
@@ -15,10 +15,7 @@ const INHERITABLE_KEYS: [&str; 3] = ["features", "optional", "public"];
 /// The change that `--fix` makes for one finding.
 #[derive(Debug)]
 pub(crate) struct Fix {
-    /// An entry to add to `[workspace.dependencies]` before the edits. When the root manifest
-    /// already has that key, the whole fix is skipped.
     pub promotion: Option<Promotion>,
-    /// Member entries to rewrite to `{ workspace = true }`.
     pub edits: Vec<Edit>,
     /// What the fix does, for the `fixed:` line.
     pub description: String,
@@ -30,42 +27,13 @@ pub(crate) struct Fix {
 pub(crate) struct Promotion {
     pub root_manifest: PathBuf,
     pub key: String,
-    pub version: String,
-    pub registry: Option<String>,
-    /// `false` writes `default-features = false` on the entry.
-    pub default_features: bool,
-}
-
-impl Promotion {
-    /// The value written to `[workspace.dependencies]`.
-    pub fn value(&self) -> Value {
-        let registry = self.registry.as_deref();
-        dep_value(&self.version, registry, self.default_features)
-    }
-}
-
-/// A `[workspace.dependencies]` value: the bare version, or an inline table with the other keys.
-pub(crate) fn dep_value(version: &str, registry: Option<&str>, default_features: bool) -> Value {
-    if default_features && registry.is_none() {
-        return version.into();
-    }
-    let mut table = InlineTable::new();
-    table.insert("version", version.into());
-    if !default_features {
-        table.insert("default-features", false.into());
-    }
-    if let Some(registry) = registry {
-        table.insert("registry", registry.into());
-    }
-    Value::InlineTable(table)
+    pub value: Value,
 }
 
 /// Rewrites one member entry to `{ workspace = true }`.
 #[derive(Debug)]
 pub(crate) struct Edit {
-    pub manifest: PathBuf,
-    pub table: DepTable,
-    pub key: String,
+    pub dep: MemberDep,
     /// Write `default-features = true`, because the entry uses default features and the
     /// workspace entry disables them. Otherwise any `default-features` key is removed.
     pub enable_default_features: bool,
@@ -93,9 +61,9 @@ pub struct FixSummary {
 /// has an entry that a fix names. Files written before the error keep their changes.
 pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     let mut summary = FixSummary::default();
-    let mut root: Option<(&Path, DocumentMut)> = None;
+    let mut root: Option<(&PathBuf, DocumentMut)> = None;
     let mut root_changed = false;
-    let mut edits: BTreeMap<&Path, Vec<&Edit>> = BTreeMap::new();
+    let mut edits: BTreeMap<&PathBuf, Vec<&Edit>> = BTreeMap::new();
 
     for finding in findings {
         let fix = match &finding.fix {
@@ -106,7 +74,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
             }
         };
         if let Some(promotion) = &fix.promotion {
-            let path = promotion.root_manifest.as_path();
+            let path = &promotion.root_manifest;
             let (_, doc) = match &mut root {
                 Some(loaded) => loaded,
                 None => root.insert((path, read_manifest(path)?)),
@@ -121,7 +89,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
             root_changed = true;
         }
         for edit in &fix.edits {
-            edits.entry(edit.manifest.as_path()).or_default().push(edit);
+            edits.entry(&edit.dep.manifest).or_default().push(edit);
         }
         summary.fixed.push(format!("fixed: {}", fix.description));
     }
@@ -137,13 +105,13 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     for (manifest, file_edits) in edits {
         let mut doc = read_manifest(manifest)?;
         for edit in file_edits {
-            let rewritten = dep_table_mut(&mut doc, &edit.table).is_some_and(|table| {
-                rewrite_dep_entry(table, &edit.key, edit.enable_default_features)
+            let rewritten = dep_table_mut(&mut doc, &edit.dep.table).is_some_and(|table| {
+                rewrite_dep_entry(table, &edit.dep.key, edit.enable_default_features)
             });
             if !rewritten {
                 return Err(format!(
                     "`{}` in {} changed after the check",
-                    edit.key,
+                    edit.dep.key,
                     manifest.display(),
                 ));
             }
@@ -214,7 +182,7 @@ fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<
     if entries.contains_key(&promotion.key) {
         return Ok(false);
     }
-    entries.insert(&promotion.key, Item::Value(promotion.value()));
+    entries.insert(&promotion.key, Item::Value(promotion.value.clone()));
     // An inline table keeps the spacing of its old last value, so respace it. A standard table
     // is left alone, because its `fmt` also drops comments.
     if inline_deps {

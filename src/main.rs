@@ -74,7 +74,6 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
                 summary.files_modified
             ),
         }
-        // The report and the exit code cover the problems that the fixes left.
         findings = check(cli)?;
     }
 
@@ -91,7 +90,6 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
     })
 }
 
-/// Run the checks. With `--promotion-failure`, promotion candidates are errors.
 fn check(cli: &Cli) -> Result<Vec<Finding>, String> {
     let workspace = workspace::parse_workspace(&cli.path)?;
     let mut findings = check::run_checks(&workspace, cli.promotion_threshold);
