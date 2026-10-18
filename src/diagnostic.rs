@@ -171,114 +171,68 @@ impl DiagnosticReport {
 mod tests {
     use super::*;
 
-    fn not_inherited() -> Diagnostic {
-        Diagnostic {
+    /// A report with each kind of diagnostic, with and without the optional fields that the
+    /// check can leave out.
+    fn report() -> DiagnosticReport {
+        let not_inherited = |workspace_version: Option<&str>| Diagnostic {
             severity: Severity::Error,
             dependency: "lru".into(),
             kind: DiagnosticKind::NotInherited {
                 version: Some("0.11".into()),
                 member: "crates/crypto/Cargo.toml".into(),
-                workspace_version: Some("0.12".into()),
+                workspace_version: workspace_version.map(String::from),
             },
-        }
-    }
-
-    fn version_mismatch() -> Diagnostic {
-        Diagnostic {
-            severity: Severity::Error,
-            dependency: "rand".into(),
-            kind: DiagnosticKind::VersionMismatch {
-                version: "0.7".into(),
-                member: "crates/utils/Cargo.toml".into(),
-                workspace_version: "0.8".into(),
-            },
-        }
-    }
-
-    fn promotion(registry: Option<&str>) -> Diagnostic {
-        Diagnostic {
+        };
+        let promotion = |version: Option<&str>, registry: Option<&str>| Diagnostic {
             severity: Severity::Warning,
             dependency: "serde_yaml".into(),
             kind: DiagnosticKind::PromotionCandidate {
-                count: 2,
-                members: vec![
-                    "crates/config/Cargo.toml".into(),
-                    "crates/node/Cargo.toml".into(),
-                ],
-                suggested_version: Some("0.9".into()),
+                count: 1,
+                members: vec!["crates/config/Cargo.toml".into()],
+                suggested_version: version.map(String::from),
                 suggested_registry: registry.map(String::from),
             },
-        }
+        };
+        DiagnosticReport::new(vec![
+            not_inherited(Some("0.12")),
+            not_inherited(None),
+            Diagnostic {
+                severity: Severity::Error,
+                dependency: "rand".into(),
+                kind: DiagnosticKind::VersionMismatch {
+                    version: "0.7".into(),
+                    member: "crates/utils/Cargo.toml".into(),
+                    workspace_version: "0.8".into(),
+                },
+            },
+            promotion(Some("0.9"), Some("my-registry")),
+            promotion(None, None),
+        ])
     }
 
     #[test]
-    fn test_not_inherited_human_format() {
+    fn test_report_human_format() {
         assert_eq!(
-            not_inherited().format_human(),
-            "error: `lru = \"0.11\"` in crates/crypto/Cargo.toml should use `lru = { workspace = true }`"
-        );
-    }
-
-    #[test]
-    fn test_version_mismatch_human_format() {
-        assert_eq!(
-            version_mismatch().format_human(),
-            "error: `rand = \"0.7\"` in crates/utils/Cargo.toml has a different version than \
-             workspace `rand = \"0.8\"`"
-        );
-    }
-
-    #[test]
-    fn test_promotion_candidate_human_format() {
-        assert_eq!(
-            promotion(None).format_human(),
-            "warning: `serde_yaml` appears in 2 crates but is not in [workspace.dependencies]\n  \
+            report().format_human(),
+            "error: `lru = \"0.11\"` in crates/crypto/Cargo.toml should use \
+             `lru = { workspace = true }`\n\n\
+             error: `lru = \"0.11\"` in crates/crypto/Cargo.toml should use \
+             `lru = { workspace = true }`\n\n\
+             error: `rand = \"0.7\"` in crates/utils/Cargo.toml has a different version than \
+             workspace `rand = \"0.8\"`\n\n\
+             warning: `serde_yaml` appears in 1 crate but is not in [workspace.dependencies]\n  \
              --> crates/config/Cargo.toml\n  \
-             --> crates/node/Cargo.toml\n  \
-             hint: consider adding `serde_yaml = \"0.9\"` to [workspace.dependencies]"
+             hint: consider adding \
+             `serde_yaml = { version = \"0.9\", registry = \"my-registry\" }` \
+             to [workspace.dependencies]\n\n\
+             warning: `serde_yaml` appears in 1 crate but is not in [workspace.dependencies]\n  \
+             --> crates/config/Cargo.toml\n\n\
+             3 errors, 2 warnings found"
         );
-    }
-
-    #[test]
-    fn test_promotion_candidate_with_registry_human_format() {
-        let output = promotion(Some("my-registry")).format_human();
-        assert!(
-            output.ends_with(
-                "\n  hint: consider adding \
-                 `serde_yaml = { version = \"0.9\", registry = \"my-registry\" }` \
-                 to [workspace.dependencies]"
-            ),
-            "{output}"
-        );
-    }
-
-    #[test]
-    fn test_report_summary_human() {
-        let report = DiagnosticReport::new(vec![not_inherited()]);
-        assert!(
-            report
-                .format_human()
-                .ends_with("\n\n1 error, 0 warnings found")
-        );
-        let empty = DiagnosticReport::new(Vec::new());
-        assert_eq!(empty.format_human(), "0 errors, 0 warnings found");
     }
 
     #[test]
     fn test_report_json_contract() {
-        let mut no_versions = not_inherited();
-        no_versions.kind = DiagnosticKind::NotInherited {
-            version: None,
-            member: "crates/a/Cargo.toml".into(),
-            workspace_version: None,
-        };
-        let report = DiagnosticReport::new(vec![
-            not_inherited(),
-            no_versions,
-            version_mismatch(),
-            promotion(None),
-            promotion(Some("my-registry")),
-        ]);
         let expected = r#"{
   "diagnostics": [
     {
@@ -293,7 +247,8 @@ mod tests {
       "severity": "error",
       "dependency": "lru",
       "check": "not-inherited",
-      "member": "crates/a/Cargo.toml"
+      "version": "0.11",
+      "member": "crates/crypto/Cargo.toml"
     },
     {
       "severity": "error",
@@ -307,24 +262,21 @@ mod tests {
       "severity": "warning",
       "dependency": "serde_yaml",
       "check": "promotion-candidate",
-      "count": 2,
+      "count": 1,
       "members": [
-        "crates/config/Cargo.toml",
-        "crates/node/Cargo.toml"
+        "crates/config/Cargo.toml"
       ],
-      "suggested_version": "0.9"
+      "suggested_version": "0.9",
+      "suggested_registry": "my-registry"
     },
     {
       "severity": "warning",
       "dependency": "serde_yaml",
       "check": "promotion-candidate",
-      "count": 2,
+      "count": 1,
       "members": [
-        "crates/config/Cargo.toml",
-        "crates/node/Cargo.toml"
-      ],
-      "suggested_version": "0.9",
-      "suggested_registry": "my-registry"
+        "crates/config/Cargo.toml"
+      ]
     }
   ],
   "summary": {
@@ -332,6 +284,6 @@ mod tests {
     "warnings": 2
   }
 }"#;
-        assert_eq!(report.format_json(), expected);
+        assert_eq!(report().format_json(), expected);
     }
 }

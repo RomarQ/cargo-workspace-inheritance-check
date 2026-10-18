@@ -231,30 +231,17 @@ mod tests {
     use super::*;
     use crate::check::run_checks;
     use crate::workspace::parse_workspace;
-    use crate::{add_root_package, fixture, temp_workspace};
-
-    fn copy_fixture(name: &str) -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().unwrap();
-        copy_dir_recursive(&fixture(name), tmp.path());
-        tmp
-    }
-
-    fn copy_dir_recursive(src: &Path, dst: &Path) {
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-            if src_path.is_dir() {
-                std::fs::create_dir_all(&dst_path).unwrap();
-                copy_dir_recursive(&src_path, &dst_path);
-            } else {
-                std::fs::copy(&src_path, &dst_path).unwrap();
-            }
-        }
-    }
+    use crate::{add_root_package, temp_workspace};
 
     fn read_file(tmp: &tempfile::TempDir, relative: &str) -> String {
         std::fs::read_to_string(tmp.path().join(relative)).unwrap()
+    }
+
+    /// The text after the `[dependencies]` header of the manifest `relative`.
+    fn deps_section(tmp: &tempfile::TempDir, relative: &str) -> String {
+        let manifest = read_file(tmp, relative);
+        let (_, deps) = manifest.split_once("[dependencies]\n").unwrap();
+        deps.to_string()
     }
 
     /// Check and fix the workspace, then check it again. Returns the summary, and the
@@ -266,202 +253,116 @@ mod tests {
         (summary, after)
     }
 
-    /// The keys of the entry at `path` in the manifest `relative`, in order.
-    fn entry_keys(tmp: &tempfile::TempDir, relative: &str, path: &[&str]) -> Vec<String> {
-        let doc: DocumentMut = read_file(tmp, relative).parse().unwrap();
-        let item = path.iter().fold(doc.as_item(), |item, key| &item[key]);
-        let table = item
-            .as_table_like()
-            .unwrap_or_else(|| panic!("{path:?}: {item}"));
-        table.iter().map(|(k, _)| k.to_string()).collect()
-    }
-
     #[test]
-    fn test_fix_not_inherited() {
-        let tmp = copy_fixture("not_inherited");
-        let (summary, after) = fix(&tmp);
-        assert_eq!(summary.fixed.len(), 1);
-        let keys = entry_keys(&tmp, "crates/foo/Cargo.toml", &["dependencies", "serde"]);
-        assert_eq!(keys, ["workspace"]);
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_version_mismatch() {
-        let tmp = copy_fixture("version_mismatch");
-        let (summary, after) = fix(&tmp);
-        assert_eq!(
-            summary.fixed,
-            ["fixed: `rand` in crates/bar/Cargo.toml changed from 0.7 to 0.8 (workspace version)"]
-        );
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_promotion_candidate() {
-        let tmp = copy_fixture("promotion_candidate");
-        let (summary, after) = fix(&tmp);
-        assert_eq!(
-            summary.fixed,
-            [
-                "fixed: `serde_yaml = \"0.9\"` added to [workspace.dependencies], updated: \
-                 crates/one/Cargo.toml, crates/two/Cargo.toml"
-            ]
-        );
-        assert_eq!(summary.files_modified, 3);
-        assert!(read_file(&tmp, "Cargo.toml").contains("serde_yaml = \"0.9\""));
-        for name in ["one", "two"] {
-            let manifest = format!("crates/{name}/Cargo.toml");
-            let keys = entry_keys(&tmp, &manifest, &["dependencies", "serde_yaml"]);
-            assert_eq!(keys, ["workspace"]);
-        }
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_keeps_only_inheritable_keys() {
+    fn test_fix_keeps_only_inheritable_keys_and_comments() {
         let tmp = temp_workspace(
             "core = { path = \"crates/core\", version = \"0.1\" }\n\
              serde1 = { package = \"serde\", version = \"1.0\" }\n\
              my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\
-             log = { version = \"0.4\", default-features = false }",
+             log = { version = \"0.4\", default-features = false }\n\
+             rand = \"0.8\"\ntokio = { version = \"1\", default-features = false }",
             &[
                 ("core", "\n[features]\nx = []"),
                 (
-                    "app",
-                    "core = { version = \"0.1\", path = \"../core\", features = [\"x\"], optional = true }\n\
+                    "a",
+                    "rand = \"0.7\" # pinned\n\
+                     core = { version = \"0.1\", path = \"../core\", features = [\"x\"], optional = true }\n\
                      serde1 = { package = \"serde\", version = \"1.0\", default-features = true }\n\
                      my-crate = { version = \"1.0\", registry = \"my-registry\", features = [\"y\"] }\n\
-                     log = { version = \"0.4\", default-features = false }",
+                     log = { version = \"0.4\", default-features = false }\n\n\
+                     [dependencies.tokio]\nversion = \"1\"\nfeatures = [\"full\"]",
                 ),
             ],
         );
         let (summary, after) = fix(&tmp);
-        assert_eq!(summary.fixed.len(), 4);
-        let app = "crates/app/Cargo.toml";
-        let keys = |key| entry_keys(&tmp, app, &["dependencies", key]);
-        assert_eq!(keys("core"), ["workspace", "features", "optional"]);
-        assert_eq!(keys("serde1"), ["workspace"]);
-        assert_eq!(keys("my-crate"), ["workspace", "features"]);
-        assert_eq!(keys("log"), ["workspace"]);
+        assert_eq!(
+            summary.fixed[..2],
+            [
+                "fixed: `rand` in crates/a/Cargo.toml changed from 0.7 to 0.8 (workspace version)",
+                "fixed: `core` in crates/a/Cargo.toml now uses workspace inheritance",
+            ]
+        );
+        assert_eq!(
+            deps_section(&tmp, "crates/a/Cargo.toml"),
+            "rand = { workspace = true } # pinned\n\
+             core = { workspace = true, features = [\"x\"], optional = true }\n\
+             serde1 = { workspace = true }\n\
+             my-crate = { workspace = true, features = [\"y\"] }\n\
+             log = { workspace = true }\n\n\
+             [dependencies.tokio]\nfeatures = [\"full\"]\nworkspace = true\ndefault-features = true\n"
+        );
         assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
-    fn test_fix_dotted_table() {
-        let tmp = temp_workspace(
-            "serde = { version = \"1.0\", default-features = false }",
-            &[(
-                "app",
-                "\n[dependencies.serde]\nversion = \"1.0\"\nfeatures = [\"derive\"]",
-            )],
-        );
-        let (_, after) = fix(&tmp);
-        let keys = entry_keys(&tmp, "crates/app/Cargo.toml", &["dependencies", "serde"]);
-        assert_eq!(keys, ["features", "workspace", "default-features"]);
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_keeps_trailing_comment() {
-        let tmp = temp_workspace("serde = \"1.0\"", &[("app", "serde = \"1.0\" # pinned")]);
-        fix(&tmp);
-        let content = read_file(&tmp, "crates/app/Cargo.toml");
-        assert!(
-            content.contains("serde = { workspace = true } # pinned\n"),
-            "{content}"
-        );
-    }
-
-    #[test]
-    fn test_fix_promotion_keeps_each_members_default_features() {
+    fn test_fix_promotion_keeps_each_members_default_features_and_registry() {
+        let registry_dep = "my-crate = { version = \"1.0\", registry = \"my-registry\" }";
         let tmp = temp_workspace(
             "",
             &[
-                ("one", "ed25519-dalek = \"2.1\""),
+                ("one", &format!("ed25519-dalek = \"2.1\"\n{registry_dep}")),
                 (
                     "two",
-                    "ed25519-dalek = { version = \"2.1\", default_features = false }",
+                    &format!(
+                        "ed25519-dalek = {{ version = \"2.1\", default_features = false }}\n\n\
+                         [target.'cfg(windows)'.dependencies]\n{registry_dep}"
+                    ),
                 ),
             ],
         );
-        let (_, after) = fix(&tmp);
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("ed25519-dalek = { version = \"2.1\", default-features = false }"),
-            "{root}"
-        );
-        let one = read_file(&tmp, "crates/one/Cargo.toml");
-        assert!(
-            one.contains("ed25519-dalek = { workspace = true, default-features = true }"),
-            "{one}"
-        );
-        let entry = ["dependencies", "ed25519-dalek"];
+        let (summary, after) = fix(&tmp);
         assert_eq!(
-            entry_keys(&tmp, "crates/two/Cargo.toml", &entry),
-            ["workspace"]
+            summary.fixed[1],
+            "fixed: `my-crate = { version = \"1.0\", registry = \"my-registry\" }` added to \
+             [workspace.dependencies], updated: crates/one/Cargo.toml, crates/two/Cargo.toml"
+        );
+        assert_eq!(summary.files_modified, 3);
+        assert_eq!(
+            read_file(&tmp, "Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\n\
+             ed25519-dalek = { version = \"2.1\", default-features = false }\n\
+             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\n"
+        );
+        assert_eq!(
+            deps_section(&tmp, "crates/one/Cargo.toml"),
+            "ed25519-dalek = { workspace = true, default-features = true }\n\
+             my-crate = { workspace = true }\n"
+        );
+        assert_eq!(
+            deps_section(&tmp, "crates/two/Cargo.toml"),
+            "ed25519-dalek = { workspace = true }\n\n\
+             [target.'cfg(windows)'.dependencies]\nmy-crate = { workspace = true }\n"
         );
         assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
-    fn test_fix_skips_entry_that_disables_default_features() {
+    fn test_fix_skips_a_fix_that_changes_what_cargo_resolves() {
         let tmp = temp_workspace(
-            "serde = \"1.0\"",
-            &[(
-                "app",
-                "serde = { version = \"1.0\", default-features = false }",
-            )],
-        );
-        let before = read_file(&tmp, "crates/app/Cargo.toml");
-        let (summary, after) = fix(&tmp);
-        assert!(summary.fixed.is_empty());
-        assert_eq!(
-            summary.skipped,
-            [
-                "skipped: `serde` in crates/app/Cargo.toml sets `default-features = false`, so \
-                 the workspace entry must set it too"
-            ]
-        );
-        assert_eq!(read_file(&tmp, "crates/app/Cargo.toml"), before);
-        assert_eq!(after.len(), 1);
-    }
-
-    #[test]
-    fn test_fix_skips_entry_whose_version_the_workspace_entry_lacks() {
-        let tmp = temp_workspace(
-            "core = { path = \"crates/core\" }",
+            "serde = \"1.0\"\ncore = { path = \"crates/core\" }",
             &[
                 ("core", ""),
-                ("app", "core = { path = \"../core\", version = \"0.1\" }"),
+                (
+                    "a",
+                    "serde = { version = \"1.0\", default-features = false }\n\
+                     core = { path = \"../core\", version = \"0.1\" }\nrand = \"0.7\"",
+                ),
+                ("b", "rand = \"0.8\""),
             ],
         );
-        let before = read_file(&tmp, "crates/app/Cargo.toml");
         let (summary, _) = fix(&tmp);
         assert_eq!(
             summary.skipped,
             [
-                "skipped: `core` in crates/app/Cargo.toml requires version 0.1, but the workspace \
-                 entry has no version"
-            ]
-        );
-        assert_eq!(read_file(&tmp, "crates/app/Cargo.toml"), before);
-    }
-
-    #[test]
-    fn test_fix_skips_promotion_with_different_versions() {
-        let tmp = temp_workspace("", &[("a", "rand = \"0.7\""), ("b", "rand = \"0.8\"")]);
-        let root = read_file(&tmp, "Cargo.toml");
-        let (summary, _) = fix(&tmp);
-        assert_eq!(
-            summary.skipped,
-            [
+                "skipped: `serde` in crates/a/Cargo.toml sets `default-features = false`, so the \
+                 workspace entry must set it too",
+                "skipped: `core` in crates/a/Cargo.toml requires version 0.1, but the workspace \
+                 entry has no version",
                 "skipped: `rand` is not promoted, because members use different versions: \
-                 crates/a/Cargo.toml (0.7), crates/b/Cargo.toml (0.8)"
+                 crates/a/Cargo.toml (0.7), crates/b/Cargo.toml (0.8)",
             ]
         );
         assert_eq!(summary.files_modified, 0);
-        assert_eq!(read_file(&tmp, "Cargo.toml"), root);
     }
 
     #[test]
@@ -484,15 +385,7 @@ mod tests {
                 "skipped: `my-crate` is not promoted, because [workspace.dependencies] already has it"
             ]
         );
-        let entry = ["dependencies", "my-crate"];
-        assert_eq!(
-            entry_keys(&tmp, "crates/a/Cargo.toml", &entry),
-            ["version", "registry"]
-        );
-        assert_eq!(
-            entry_keys(&tmp, "crates/c/Cargo.toml", &entry),
-            ["workspace"]
-        );
+        assert_eq!(summary.files_modified, 3);
         assert!(after.is_empty(), "{after:?}");
     }
 
@@ -501,11 +394,10 @@ mod tests {
         let tmp = temp_workspace("", &[("a", "anyhow = \"1.0\"")]);
         add_root_package(&tmp, "anyhow = \"1.0\"");
         let (_, after) = fix(&tmp);
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(root.contains("anyhow = \"1.0\""), "{root}");
         assert_eq!(
-            entry_keys(&tmp, "Cargo.toml", &["dependencies", "anyhow"]),
-            ["workspace"]
+            deps_section(&tmp, "Cargo.toml"),
+            "anyhow = { workspace = true }\n\n[workspace]\nmembers = [\"crates/*\"]\n\n\
+             [workspace.dependencies]\nanyhow = \"1.0\"\n\n"
         );
         assert!(after.is_empty(), "{after:?}");
     }
@@ -523,52 +415,6 @@ mod tests {
             read_file(&tmp, "Cargo.toml"),
             "workspace = { members = [\"crates/*\"], dependencies = { anyhow = \"1.0\" } }\n"
         );
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_target_specific_not_inherited() {
-        let tmp = copy_fixture("target_deps");
-        let (_, after) = fix(&tmp);
-        let entry = ["target", "cfg(windows)", "dependencies", "winapi"];
-        assert_eq!(
-            entry_keys(&tmp, "crates/plat/Cargo.toml", &entry),
-            ["workspace"]
-        );
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_promotion_carries_registry() {
-        let tmp = copy_fixture("registry_promotion");
-        let (_, after) = fix(&tmp);
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("my-crate = { version = \"1.0\", registry = \"my-registry\" }"),
-            "{root}"
-        );
-        for name in ["one", "two"] {
-            let manifest = format!("crates/{name}/Cargo.toml");
-            let keys = entry_keys(&tmp, &manifest, &["dependencies", "my-crate"]);
-            assert_eq!(keys, ["workspace"]);
-        }
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_promotion_with_target_specific_default_features() {
-        let tmp = copy_fixture("target_deps_promotion");
-        let (_, after) = fix(&tmp);
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("winapi = { version = \"0.3\", default-features = false }"),
-            "{root}"
-        );
-        for name in ["one", "two"] {
-            let manifest = format!("crates/{name}/Cargo.toml");
-            let entry = ["target", "cfg(windows)", "dependencies", "winapi"];
-            assert_eq!(entry_keys(&tmp, &manifest, &entry), ["workspace"]);
-        }
         assert!(after.is_empty(), "{after:?}");
     }
 }

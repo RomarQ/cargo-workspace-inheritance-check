@@ -8,13 +8,6 @@ pub mod diagnostic;
 pub mod fix;
 pub mod workspace;
 
-#[cfg(test)]
-pub(crate) fn fixture(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
-
 /// Create a temp workspace with a root Cargo.toml and member crates under `crates/`.
 ///
 /// `workspace_deps` goes under `[workspace.dependencies]`, and each member is a tuple of

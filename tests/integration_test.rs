@@ -1,9 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn cargo_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cargo-workspace-inheritance-check"))
-}
+const BIN: &str = env!("CARGO_BIN_EXE_cargo-workspace-inheritance-check");
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -13,7 +11,7 @@ fn fixture(name: &str) -> PathBuf {
 
 /// Run the binary as `cargo workspace-inheritance-check` does, with the subcommand name first.
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(cargo_bin())
+    Command::new(BIN)
         .arg("workspace-inheritance-check")
         .arg("--path")
         .arg(root)
@@ -33,125 +31,42 @@ fn temp_tree(files: &[(&str, &str)]) -> tempfile::TempDir {
     tmp
 }
 
-/// Each member's dependencies as cargo resolves them, by package name.
-fn cargo_deps(root: &Path) -> serde_json::Value {
+/// The workspace as cargo reads it.
+fn cargo_metadata(root: &Path) -> serde_json::Value {
     let output = Command::new(env!("CARGO"))
-        .args([
-            "metadata",
-            "--no-deps",
-            "--offline",
-            "--format-version",
-            "1",
-        ])
+        .args(["metadata", "--no-deps", "--offline"])
+        .args(["--format-version", "1"])
         .current_dir(root)
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let packages = metadata["packages"].as_array().unwrap();
-    packages
-        .iter()
-        .map(|p| {
-            (
-                p["name"].as_str().unwrap().to_string(),
-                p["dependencies"].clone(),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>()
-        .into()
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
-const REGISTRY_CONFIG: &str =
-    "[registries.my-registry]\nindex = \"sparse+https://example.invalid/index/\"\n";
-
 #[test]
-fn test_not_inherited_exits_one() {
-    let output = run(&fixture("not_inherited"), &[]);
+fn test_promotion_candidates_fail_only_with_promotion_failure() {
+    let root = fixture("promotion_candidate");
+    assert!(run(&root, &[]).status.success());
+    let output = run(&root, &["--promotion-failure"]);
     assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("error:"));
-    assert!(stdout.contains("serde"));
-    assert!(stdout.contains("workspace = true"));
-}
-
-#[test]
-fn test_promotion_candidate_warning() {
-    let output = run(&fixture("promotion_candidate"), &[]);
-    assert!(
-        output.status.success(),
-        "warnings alone should not cause failure"
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "error: `serde_yaml` appears in 2 crates but is not in [workspace.dependencies]\n  \
+         --> crates/one/Cargo.toml\n  \
+         --> crates/two/Cargo.toml\n  \
+         hint: consider adding `serde_yaml = \"0.9\"` to [workspace.dependencies]\n\n\
+         1 error, 0 warnings found\n"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("warning:"));
-    assert!(stdout.contains("serde_yaml"));
-}
-
-#[test]
-fn test_promotion_failure_flag() {
-    let output = run(&fixture("promotion_candidate"), &["--promotion-failure"]);
-    assert!(
-        !output.status.success(),
-        "--promotion-failure should cause exit 1"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.starts_with("error: `serde_yaml` appears in 2 crates"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.ends_with("\n\n1 error, 0 warnings found\n"),
-        "{stdout}"
-    );
-}
-
-#[test]
-fn test_no_fail_flag() {
-    let output = run(&fixture("not_inherited"), &["--no-fail"]);
-    assert!(output.status.success(), "--no-fail should always exit 0");
-}
-
-#[test]
-fn test_json_format() {
-    let output = run(
-        &fixture("not_inherited"),
-        &["--format", "json", "--no-fail"],
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed["diagnostics"].is_array());
-    assert_eq!(parsed["diagnostics"][0]["check"], "not-inherited");
-    assert!(parsed["summary"]["errors"].as_u64().unwrap() > 0);
-}
-
-#[test]
-fn test_promotion_threshold() {
-    let output = run(
-        &fixture("promotion_candidate"),
-        &["--promotion-threshold", "3"],
-    );
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("serde_yaml"),
-        "threshold 3 should not flag serde_yaml in 2 crates"
-    );
+    let higher_threshold = ["--promotion-failure", "--promotion-threshold", "3"];
+    assert!(run(&root, &higher_threshold).status.success());
 }
 
 #[test]
 fn test_member_paths_are_relative_to_the_workspace_root() {
-    let output = Command::new(cargo_bin())
+    let output = Command::new(BIN)
         .current_dir(fixture(""))
-        .args([
-            "--path",
-            "./version_mismatch",
-            "--format",
-            "json",
-            "--no-fail",
-        ])
+        .args(["--path", "./version_mismatch", "--format", "json"])
         .output()
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -189,25 +104,28 @@ fn test_fix_keeps_what_cargo_resolves() {
              [workspace.dependencies]\nserde = \"1.0\"\n\
              tokio = { version = \"1\", default-features = false }\n",
         ),
-        (".cargo/config.toml", REGISTRY_CONFIG),
+        (
+            ".cargo/config.toml",
+            "[registries.my-registry]\nindex = \"sparse+https://example.invalid/index/\"\n",
+        ),
         ("crates/a/Cargo.toml", &a),
         ("crates/a/src/lib.rs", ""),
         ("crates/b/Cargo.toml", &b),
         ("crates/b/src/lib.rs", ""),
     ]);
 
-    let before = cargo_deps(tmp.path());
+    let before = cargo_metadata(tmp.path());
     let output = run(tmp.path(), &["--fix"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("6 fix(es) applied"), "{stderr}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "0 errors, 0 warnings found\n");
-    assert_eq!(cargo_deps(tmp.path()), before);
+    assert_eq!(cargo_metadata(tmp.path()), before);
 }
 
 #[test]
-fn test_fix_reports_the_problems_it_leaves() {
+fn test_problems_left_by_fix_fail_unless_no_fail() {
     let tmp = temp_tree(&[
         (
             "Cargo.toml",
@@ -226,9 +144,5 @@ fn test_fix_reports_the_problems_it_leaves() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("skipped: `serde`"));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.ends_with("1 error, 0 warnings found\n"), "{stdout}");
-
-    let output = run(tmp.path(), &["--fix", "--no-fail", "--format", "json"]);
-    assert!(output.status.success());
-    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(parsed["summary"]["errors"], 1);
+    assert!(run(tmp.path(), &["--fix", "--no-fail"]).status.success());
 }

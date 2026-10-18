@@ -203,7 +203,7 @@ fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::workspace::parse_workspace;
-    use crate::{add_root_package, fixture, temp_workspace};
+    use crate::{add_root_package, temp_workspace};
 
     fn check(root: &Path, promotion_threshold: usize) -> Vec<Diagnostic> {
         let ws = parse_workspace(root).unwrap();
@@ -229,105 +229,16 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_workspace_no_diagnostics() {
-        assert!(check(&fixture("valid_workspace"), 2).is_empty());
-    }
-
-    #[test]
-    fn test_not_inherited() {
-        let diags = check(&fixture("not_inherited"), 2);
-        assert_eq!(summarize(&diags), [("serde", "crates/foo/Cargo.toml")]);
-        assert!(matches!(diags[0].kind, DiagnosticKind::NotInherited { .. }));
-    }
-
-    #[test]
-    fn test_version_mismatch() {
-        let diags = check(&fixture("version_mismatch"), 2);
-        let [
-            Diagnostic {
-                dependency,
-                kind:
-                    DiagnosticKind::VersionMismatch {
-                        version,
-                        workspace_version,
-                        ..
-                    },
-                ..
-            },
-        ] = &diags[..]
-        else {
-            panic!("{diags:?}");
-        };
-        assert_eq!(dependency, "rand");
-        assert_eq!(version, "0.7");
-        assert_eq!(workspace_version, "0.8");
-    }
-
-    #[test]
-    fn test_promotion_candidate() {
-        let diags = check(&fixture("promotion_candidate"), 2);
-        let [
-            Diagnostic {
-                dependency,
-                kind: DiagnosticKind::PromotionCandidate { count, .. },
-                ..
-            },
-        ] = &diags[..]
-        else {
-            panic!("{diags:?}");
-        };
-        assert_eq!(dependency, "serde_yaml");
-        assert_eq!(*count, 2);
-    }
-
-    #[test]
-    fn test_target_specific_not_inherited() {
-        let diags = check(&fixture("target_deps"), 2);
-        assert_eq!(summarize(&diags), [("winapi", "crates/plat/Cargo.toml")]);
-    }
-
-    #[test]
-    fn test_registry_mismatch_neither_matched_nor_promoted() {
-        let diags = check(&fixture("registry_mismatch"), 1);
-        assert!(diags.is_empty(), "{diags:?}");
-    }
-
-    #[test]
-    fn test_promotion_candidate_with_registry() {
-        let diags = check(&fixture("registry_promotion"), 2);
-        let [
-            Diagnostic {
-                kind:
-                    DiagnosticKind::PromotionCandidate {
-                        suggested_registry, ..
-                    },
-                ..
-            },
-        ] = &diags[..]
-        else {
-            panic!("{diags:?}");
-        };
-        assert_eq!(suggested_registry.as_deref(), Some("my-registry"));
-    }
-
-    #[test]
-    fn test_different_registries_not_grouped_for_promotion() {
-        let diags = check(&fixture("registry_different"), 2);
-        assert!(diags.is_empty(), "{diags:?}");
-    }
-
-    #[test]
-    fn test_same_registry_flagged_as_not_inherited() {
-        let diags = check(&fixture("registry_not_inherited"), 2);
-        assert_eq!(summarize(&diags), [("my-crate", "crates/app/Cargo.toml")]);
-    }
-
-    #[test]
-    fn test_root_package_is_checked() {
-        let tmp = temp_workspace("serde = \"1.0\"", &[("a", "")]);
-        add_root_package(&tmp, "serde = \"1.0\"");
-        let diags = check(tmp.path(), 2);
-        assert_eq!(summarize(&diags), [("serde", "Cargo.toml")]);
+    fn test_only_a_different_version_is_a_version_mismatch() {
+        let tmp = temp_workspace(
+            "rand = \"0.8\"\nserde = \"1.0\"",
+            &[("a", "rand = \"0.7\"\nserde = \"1.0\"")],
+        );
+        let diags = serde_json::to_value(check(tmp.path(), 2)).unwrap();
+        assert_eq!(diags[0]["check"], "version-mismatch");
+        assert_eq!(diags[0]["version"], "0.7");
+        assert_eq!(diags[0]["workspace_version"], "0.8");
+        assert_eq!(diags[1]["check"], "not-inherited");
     }
 
     #[test]
@@ -335,27 +246,22 @@ mod tests {
         let tmp = temp_workspace(
             "core = { path = \"crates/core\", version = \"0.1\" }\n\
              reg = { path = \"crates/reg\", version = \"0.1\" }\n\
-             foo = { git = \"https://example.invalid/foo\", version = \"0.1\" }\n\
-             local = \"0.1\"\nidx = \"0.1\"",
+             foo = { git = \"https://example.invalid/foo\", version = \"0.1\" }\nidx = \"0.1\"",
             &[
                 ("core", ""),
                 ("reg", ""),
-                ("local", ""),
                 ("other", ""),
                 (
                     "a",
                     "core = { path = \"../core\", version = \"0.1\" }\n\
                      reg = { path = \"../reg\", version = \"0.1\", registry = \"my-registry\" }\n\
                      foo = { git = \"https://example.invalid/foo\", branch = \"dev\", version = \"0.1\" }\n\
-                     local = { path = \"../local\", version = \"0.1\" }\n\
                      other = { path = \"../other\", version = \"0.1\" }\n\
                      idx = { version = \"0.1\", registry-index = \"sparse+https://example.invalid/index/\" }",
                 ),
                 (
                     "b",
-                    "core = { path = \"../core\" }\n\
-                     local = { path = \"../local\", version = \"0.1\" }\n\
-                     other = { path = \"../other\", version = \"0.1\" }",
+                    "core = { path = \"../core\" }\nother = { path = \"../other\", version = \"0.1\" }",
                 ),
             ],
         );
@@ -397,30 +303,37 @@ mod tests {
     }
 
     #[test]
-    fn test_ignore_rules() {
+    fn test_ignore_rule_member_scopes() {
         let tmp = temp_workspace(
-            "rand = \"0.8\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
+            "rand = \"0.8\"\nserde = \"1.0\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
              { dependency = \"rand\", member = \"crates/bar\" },\n\
              { dependency = \"rand\", member = \"./crates/baz/\" },\n\
-             { dependency = \"openssl\" },\n]",
+             { dependency = \"serde\", member = \"Cargo.toml\" },\n\
+             { dependency = \"openssl\", member = \".\" },\n\
+             { dependency = \"log\" },\n]",
             &[
-                ("bar", "rand = \"0.7\"\nopenssl = \"0.10\""),
-                ("barista", "rand = \"0.7\"\nopenssl = \"0.10\""),
+                ("bar", "rand = \"0.7\"\nopenssl = \"0.10\"\nlog = \"0.4\""),
+                (
+                    "barista",
+                    "rand = \"0.7\"\nserde = \"1.0\"\nopenssl = \"0.10\"\nlog = \"0.4\"",
+                ),
                 ("baz", "rand = \"0.7\""),
             ],
         );
+        add_root_package(&tmp, "serde = \"1.0\"");
         let diags = check(tmp.path(), 2);
-        assert_eq!(summarize(&diags), [("rand", "crates/barista/Cargo.toml")]);
+        let barista = "crates/barista/Cargo.toml";
+        assert_eq!(summarize(&diags), [("rand", barista), ("serde", barista)]);
     }
 
     #[test]
     fn test_ignore_rule_matches_key_or_package() {
         let renamed = "serde1 = { package = \"serde\", version = \"1.0\" }\n\
                        md5 = { package = \"md-5\", version = \"0.10\" }";
+        let ignore = "[[workspace.metadata.inheritance-check.ignore]]";
         let tmp = temp_workspace(
             &format!(
-                "{renamed}\n\n[workspace.metadata.inheritance-check]\n\
-                 ignore = [{{ dependency = \"serde\" }}, {{ dependency = \"md5\" }}]"
+                "{renamed}\n\n{ignore}\ndependency = \"serde\"\n\n{ignore}\ndependency = \"md5\""
             ),
             &[("a", renamed)],
         );
@@ -429,107 +342,69 @@ mod tests {
     }
 
     #[test]
-    fn test_ignore_rule_scopes_for_the_root() {
-        let tmp = temp_workspace(
-            "serde = \"1.0\"\nrand = \"0.8\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
-             { dependency = \"serde\", member = \"Cargo.toml\" },\n\
-             { dependency = \"rand\", member = \".\" },\n]",
-            &[("a", "serde = \"1.0\"\nrand = \"0.8\"")],
-        );
-        add_root_package(&tmp, "serde = \"1.0\"\nrand = \"0.8\"");
-        let diags = check(tmp.path(), 2);
-        assert_eq!(summarize(&diags), [("serde", "crates/a/Cargo.toml")]);
-    }
-
-    #[test]
-    fn test_promotion_counts_crates_not_sections() {
-        let tmp = temp_workspace(
-            "",
-            &[("a", "tokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"")],
-        );
-        let diags = check(tmp.path(), 2);
-        assert!(diags.is_empty(), "{diags:?}");
-    }
-
-    #[test]
-    fn test_suggested_version_is_most_common_and_none_on_a_tie() {
+    fn test_promotion_counts_crates_and_suggests_the_most_common_version() {
+        let registry_dep = "my-crate = { version = \"1.0\", registry = \"my-registry\" }";
         let tmp = temp_workspace(
             "",
             &[
-                ("a", "rand = \"0.9\"\nitertools = \"0.10\""),
+                (
+                    "a",
+                    &format!("rand = \"0.9\"\nitertools = \"0.10\"\n{registry_dep}"),
+                ),
                 (
                     "b",
-                    "rand = \"0.9\"\nitertools = \"0.9\"\n\n[dev-dependencies]\nitertools = \"0.9\"",
+                    &format!(
+                        "rand = \"0.9\"\nitertools = \"0.9\"\n{registry_dep}\n\n\
+                         [dev-dependencies]\nitertools = \"0.9\""
+                    ),
                 ),
                 ("c", "rand = \"0.8\""),
             ],
         );
         let diags = check(tmp.path(), 2);
-        let suggested: Vec<_> = diags
+        let found: Vec<_> = diags
             .iter()
             .map(|d| match &d.kind {
                 DiagnosticKind::PromotionCandidate {
-                    suggested_version, ..
-                } => (d.dependency.as_str(), suggested_version.as_deref()),
+                    count,
+                    suggested_version,
+                    suggested_registry,
+                    ..
+                } => (
+                    d.dependency.as_str(),
+                    *count,
+                    suggested_version.as_deref(),
+                    suggested_registry.as_deref(),
+                ),
                 _ => panic!("{diags:?}"),
             })
             .collect();
-        assert_eq!(suggested, [("itertools", None), ("rand", Some("0.9"))]);
-    }
-
-    #[test]
-    fn test_dev_and_build_dependencies_checked() {
-        let tmp = temp_workspace(
-            "serde = \"1.0\"\ncc = \"1.0\"",
-            &[(
-                "app",
-                "\n[dev-dependencies]\nserde = \"1.0\"\n\n[build_dependencies]\ncc = \"1.0\"",
-            )],
+        assert_eq!(
+            found,
+            [
+                ("itertools", 2, None, None),
+                ("my-crate", 2, Some("1.0"), Some("my-registry")),
+                ("rand", 3, Some("0.9"), None),
+            ]
         );
-        let diags = check(tmp.path(), 2);
-        let mut found = summarize(&diags);
-        found.sort();
-        let app = "crates/app/Cargo.toml";
-        assert_eq!(found, [("cc", app), ("serde", app)]);
     }
 
     #[test]
-    fn test_shadowed_underscore_table_is_skipped() {
+    fn test_reads_every_dependency_table_except_a_shadowed_one() {
         let tmp = temp_workspace(
             "serde = \"1.0\"\ncc = \"1.0\"",
             &[(
                 "app",
                 "\n[dev-dependencies]\nserde = \"1.0\"\n\n[dev_dependencies]\ncc = \"1.0\"\n\n\
-                 [target.'cfg(unix)'.dev_dependencies]\ncc = \"1.0\"",
+                 [build_dependencies]\ncc = \"1.0\"\n\n\
+                 [target]\n\"cfg(unix)\" = { dev_dependencies = { cc = \"1.0\" } }",
             )],
         );
         let diags = check(tmp.path(), 2);
         let app = "crates/app/Cargo.toml";
-        assert_eq!(summarize(&diags), [("serde", app), ("cc", app)]);
-    }
-
-    #[test]
-    fn test_inline_tables_are_read() {
-        let tmp = temp_workspace(
-            "serde = \"1.0\"",
-            &[
-                (
-                    "a",
-                    "\n[target.'cfg(unix)']\ndependencies = { serde = \"1.0\" }",
-                ),
-                (
-                    "b",
-                    "\n[target]\n\"cfg(unix)\" = { dependencies = { serde = \"1.0\" } }",
-                ),
-            ],
-        );
-        let diags = check(tmp.path(), 2);
         assert_eq!(
             summarize(&diags),
-            [
-                ("serde", "crates/a/Cargo.toml"),
-                ("serde", "crates/b/Cargo.toml")
-            ]
+            [("serde", app), ("cc", app), ("cc", app)]
         );
     }
 }

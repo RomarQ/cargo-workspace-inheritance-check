@@ -400,22 +400,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ignore_rules_array_of_tables() {
-        let tmp = temp_workspace(
-            "\n[[workspace.metadata.inheritance-check.ignore]]\n\
-             dependency = \"rand\"\nmember = \"crates/bar\"",
-            &[("bar", "")],
-        );
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let rules: Vec<_> = ws
-            .ignore_rules
-            .iter()
-            .map(|r| (r.dependency.as_str(), r.member.as_deref()))
-            .collect();
-        assert_eq!(rules, [("rand", Some("crates/bar"))]);
-    }
-
-    #[test]
     fn test_invalid_ignore_rule_is_an_error() {
         let rules = [
             "{ dependency = \"rand\", member = [\"crates/bar\"] }",
