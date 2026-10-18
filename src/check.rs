@@ -296,6 +296,30 @@ mod tests {
     }
 
     #[test]
+    fn test_not_inherited_names_default_features_only_where_the_member_needs_them() {
+        let found: Vec<_> = check("fix_inheritable_keys")
+            .into_iter()
+            .filter_map(|d| match d.kind {
+                DiagnosticKind::NotInherited {
+                    enable_default_features,
+                    ..
+                } => Some((d.dependency, enable_default_features)),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            ("core", false),
+            ("serde1", false),
+            ("log", false),
+            ("tokio", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(key, enable)| (key.to_string(), enable))
+        );
+    }
+
+    #[test]
     fn test_reads_every_dependency_table_except_a_shadowed_one() {
         let diags = check("dependency_tables");
         let app = "crates/app/Cargo.toml";
