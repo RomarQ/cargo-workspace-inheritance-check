@@ -11,5 +11,5 @@ serde = "1.0"
 ignore = [
   { dependency = "rand", member = "../outside" },
   { dependency = "log", member = ".." },
-  { dependency = "itoa", member = "." },
+  { dependency = "itoa", member = "./" },
 ]
