@@ -34,9 +34,10 @@ pub struct IgnoreRule {
 }
 
 impl IgnoreRule {
-    /// Whether the rule covers the entry `key` for `package` in the member whose manifest is
-    /// at `member_manifest`, a path such as `crates/bar/Cargo.toml` from
-    /// [`relative_manifest`].
+    /// Whether the rule covers the entry `key` for `package` in one member.
+    ///
+    /// `member_manifest` is the member's manifest path from [`relative_manifest`], such as
+    /// `crates/bar/Cargo.toml`.
     pub fn matches(&self, key: &str, package: &str, member_manifest: &str) -> bool {
         if self.dependency != key && self.dependency != package {
             return false;
@@ -283,27 +284,22 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
     else {
         return Ok(Vec::new());
     };
-    let invalid = || {
+    // `ignore = [{ .. }]` holds inline tables; `[[...ignore]]` is an array of tables.
+    let rules = if let Some(array) = ignore.as_array() {
+        array
+            .iter()
+            .map(|v| rule_from_table_like(v.as_inline_table()?))
+            .collect()
+    } else if let Some(tables) = ignore.as_array_of_tables() {
+        tables.iter().map(|t| rule_from_table_like(t)).collect()
+    } else {
+        None
+    };
+    rules.ok_or_else(|| {
         "Invalid `ignore` in [workspace.metadata.inheritance-check]: expected an array of \
          `{ dependency = \"...\", member = \"...\" }` entries, where `member` is optional"
             .to_string()
-    };
-
-    // `ignore = [{ .. }]` holds inline tables; `[[...ignore]]` is an array of tables.
-    let entries: Vec<&dyn TableLike> = if let Some(array) = ignore.as_array() {
-        array
-            .iter()
-            .map(|v| v.as_inline_table().map(|t| t as &dyn TableLike))
-            .collect::<Option<_>>()
-            .ok_or_else(invalid)?
-    } else {
-        let tables = ignore.as_array_of_tables().ok_or_else(invalid)?;
-        tables.iter().map(|t| t as &dyn TableLike).collect()
-    };
-    entries
-        .into_iter()
-        .map(|t| rule_from_table_like(t).ok_or_else(invalid))
-        .collect()
+    })
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {

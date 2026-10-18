@@ -96,9 +96,9 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec, manifest: &Path, member_rel: &st
     let (kind, description) = match (&dep.spec.version, &ws.version) {
         (Some(from), Some(to)) if from != to => (
             DiagnosticKind::VersionMismatch {
-                version: Some(from.clone()),
+                version: from.clone(),
                 member,
-                workspace_version: Some(to.clone()),
+                workspace_version: to.clone(),
             },
             format!("`{key}` in {member_rel} changed from {from} to {to} (workspace version)"),
         ),
@@ -278,8 +278,8 @@ mod tests {
             panic!("{diags:?}");
         };
         assert_eq!(dependency, "rand");
-        assert_eq!(version.as_deref(), Some("0.7"));
-        assert_eq!(workspace_version.as_deref(), Some("0.8"));
+        assert_eq!(version, "0.7");
+        assert_eq!(workspace_version, "0.8");
     }
 
     #[test]

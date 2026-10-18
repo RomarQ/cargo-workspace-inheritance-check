@@ -2,43 +2,60 @@
 
 use serde::Serialize;
 
+/// How serious a [`Diagnostic`] is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    /// A problem that makes the check fail.
     Error,
+    /// A suggestion that does not make the check fail.
     Warning,
 }
 
+/// A problem with one dependency, as the check reports it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
+    /// The key of the dependency entry.
     pub dependency: String,
     #[serde(flatten)]
     pub kind: DiagnosticKind,
 }
 
+/// What the check found. The JSON output names the variant in its `check` field.
+///
+/// Each `member` is a manifest path from [`crate::workspace::relative_manifest`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "check", rename_all = "kebab-case")]
 pub enum DiagnosticKind {
+    /// A member declares its own entry instead of inheriting the workspace entry.
     NotInherited {
+        /// The member's version requirement, if the entry gives one.
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<String>,
         member: String,
+        /// The workspace entry's version requirement, if it gives one.
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace_version: Option<String>,
     },
+    /// Like [`Self::NotInherited`], but the member and the workspace entry give different
+    /// versions.
     VersionMismatch {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        version: Option<String>,
+        version: String,
         member: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        workspace_version: Option<String>,
+        workspace_version: String,
     },
+    /// Crates declare a dependency that `[workspace.dependencies]` does not have.
     PromotionCandidate {
+        /// The number of crates that declare it.
         count: usize,
+        /// The manifest path of each crate that declares it.
         members: Vec<String>,
+        /// The version that the most crates declare. `None` means a tie, or that no crate
+        /// gives one.
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_version: Option<String>,
+        /// The registry that the crates name, or `None` for crates.io.
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_registry: Option<String>,
     },
@@ -59,7 +76,7 @@ fn plural(count: usize) -> &'static str {
 }
 
 /// Format a dependency value for display, e.g. `"1.0"` or `{ version = "1.0", registry = "r" }`.
-pub fn format_dep_value(version: &str, registry: Option<&str>) -> String {
+fn format_dep_value(version: &str, registry: Option<&str>) -> String {
     if let Some(reg) = registry {
         format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
     } else {
@@ -68,6 +85,7 @@ pub fn format_dep_value(version: &str, registry: Option<&str>) -> String {
 }
 
 impl Diagnostic {
+    /// The diagnostic as text for a terminal. A promotion candidate takes several lines.
     pub fn format_human(&self) -> String {
         match &self.kind {
             DiagnosticKind::NotInherited {
@@ -83,14 +101,10 @@ impl Diagnostic {
                 version,
                 member,
                 workspace_version,
-            } => {
-                let ver = version.as_deref().unwrap_or("?");
-                let ws_ver = workspace_version.as_deref().unwrap_or("?");
-                format!(
-                    "error: `{dep} = \"{ver}\"` in {member} has a different version than workspace `{dep} = \"{ws_ver}\"`",
-                    dep = self.dependency,
-                )
-            }
+            } => format!(
+                "error: `{dep} = \"{version}\"` in {member} has a different version than workspace `{dep} = \"{workspace_version}\"`",
+                dep = self.dependency,
+            ),
             DiagnosticKind::PromotionCandidate {
                 count,
                 members,
@@ -119,12 +133,14 @@ impl Diagnostic {
     }
 }
 
+/// The diagnostics of one check, and how many there are of each severity.
 #[derive(Debug, Serialize)]
 pub struct DiagnosticReport {
     pub diagnostics: Vec<Diagnostic>,
     pub summary: Summary,
 }
 
+/// How many diagnostics a [`DiagnosticReport`] holds of each severity.
 #[derive(Debug, Serialize)]
 pub struct Summary {
     pub errors: usize,
@@ -132,6 +148,7 @@ pub struct Summary {
 }
 
 impl DiagnosticReport {
+    /// Make a report of `diagnostics`, and count them by severity.
     pub fn new(diagnostics: Vec<Diagnostic>) -> Self {
         let (mut errors, mut warnings) = (0, 0);
         for d in &diagnostics {
@@ -146,6 +163,7 @@ impl DiagnosticReport {
         }
     }
 
+    /// Each diagnostic as text for a terminal, then a summary line.
     pub fn format_human(&self) -> String {
         let mut parts: Vec<String> = self
             .diagnostics
@@ -161,6 +179,7 @@ impl DiagnosticReport {
         parts.join("\n\n")
     }
 
+    /// The report as pretty-printed JSON.
     pub fn format_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("DiagnosticReport is always serializable")
     }
@@ -187,9 +206,9 @@ mod tests {
             severity: Severity::Error,
             dependency: "rand".into(),
             kind: DiagnosticKind::VersionMismatch {
-                version: Some("0.7".into()),
+                version: "0.7".into(),
                 member: "crates/utils/Cargo.toml".into(),
-                workspace_version: Some("0.8".into()),
+                workspace_version: "0.8".into(),
             },
         }
     }

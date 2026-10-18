@@ -5,7 +5,7 @@ use cargo_workspace_inheritance_check::check::{self, Finding};
 use cargo_workspace_inheritance_check::diagnostic::{DiagnosticKind, DiagnosticReport, Severity};
 use cargo_workspace_inheritance_check::fix::{self, FixSummary};
 use cargo_workspace_inheritance_check::workspace;
-use clap::builder::{PossibleValuesParser, RangedU64ValueParser};
+use clap::builder::RangedU64ValueParser;
 use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -48,10 +48,7 @@ struct Cli {
 
     // Support `cargo workspace-inheritance-check` invocation where cargo
     // passes the subcommand name as the first argument.
-    #[arg(
-        hide = true,
-        value_parser = PossibleValuesParser::new(["workspace-inheritance-check"])
-    )]
+    #[arg(hide = true, value_parser = ["workspace-inheritance-check"])]
     _subcommand: Option<String>,
 }
 
