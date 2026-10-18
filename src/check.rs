@@ -75,6 +75,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let key = &dep.key;
     let member = &dep.member;
+    let rewrite = edit(dep, ws.default_features);
     let (kind, description) = match (&dep.spec.version, &ws.version) {
         (Some(from), Some(to)) if from != to => (
             DiagnosticKind::VersionMismatch {
@@ -89,6 +90,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
                 version: version.clone(),
                 member: member.clone(),
                 workspace_version: workspace_version.clone(),
+                enable_default_features: rewrite.enable_default_features,
             },
             format!("`{key}` in {member} now uses workspace inheritance"),
         ),
@@ -106,7 +108,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     } else {
         Ok(Fix {
             promotion: None,
-            edits: vec![edit(dep, ws.default_features)],
+            edits: vec![rewrite],
             description,
         })
     };

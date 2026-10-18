@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `--fix` keeps what cargo resolves for each member, except the version on a mismatch and the features of the workspace entry. It removes every key that cargo ignores on an inherited entry, such as `path`, `git`, `package`, and `registry`, and keeps `features`, `optional`, and `public`.
-- `--fix` writes `default-features = true` where the workspace entry disables default features. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
+- `--fix` writes `default-features = true` where the workspace entry disables default features, and the not-inherited error shows it in the entry to use. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
