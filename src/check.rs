@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::fix::{Edit, Fix, Promotion};
-use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo, relative_manifest};
+use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
 #[derive(Debug)]
@@ -14,10 +14,6 @@ pub struct Finding {
     pub diagnostic: Diagnostic,
     pub(crate) fix: Result<Fix, String>,
 }
-
-/// An entry that could move to `[workspace.dependencies]`: the member's relative manifest
-/// path, its manifest path, and the entry.
-type Usage<'a> = (String, &'a Path, &'a MemberDep);
 
 /// Check every member entry that does not inherit from the workspace.
 ///
@@ -28,47 +24,35 @@ type Usage<'a> = (String, &'a Path, &'a MemberDep);
 /// registry. Entries that an ignore rule covers are skipped.
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut candidates: BTreeMap<(&str, Option<&str>), Vec<Usage>> = BTreeMap::new();
+    let mut candidates: BTreeMap<(&str, Option<&str>), Vec<&MemberDep>> = BTreeMap::new();
 
-    for member in &workspace.members {
-        let member_rel = relative_manifest(&workspace.root_path, &member.manifest_path);
-        for dep in &member.dependencies {
-            let ignored = workspace
-                .ignore_rules
-                .iter()
-                .any(|r| r.matches(&dep.key, &dep.spec.package, &member_rel));
-            if ignored {
-                continue;
+    for dep in &workspace.member_deps {
+        if workspace.ignore_rules.iter().any(|rule| rule.matches(dep)) {
+            continue;
+        }
+        match workspace.workspace_deps.get(&dep.key) {
+            Some(ws) if ws.package == dep.spec.package && ws.source == dep.spec.source => {
+                findings.push(not_inherited(dep, ws));
             }
-            match workspace.workspace_deps.get(&dep.key) {
-                Some(ws) if ws.package == dep.spec.package && ws.source == dep.spec.source => {
-                    findings.push(not_inherited(dep, ws, &member.manifest_path, &member_rel));
-                }
-                // The workspace uses this key for another package or source, so the entry
-                // can neither inherit it nor be promoted under it.
-                Some(_) => {}
-                None => {
-                    let registry = match &dep.spec.source {
-                        DepSource::Registry(Registry::CratesIo) => None,
-                        DepSource::Registry(Registry::Named(name)) => Some(name.as_str()),
-                        _ => continue,
-                    };
-                    if dep.spec.package == dep.key {
-                        candidates.entry((&dep.key, registry)).or_default().push((
-                            member_rel.clone(),
-                            &member.manifest_path,
-                            dep,
-                        ));
-                    }
-                }
+            None if dep.spec.package == dep.key => {
+                let registry = match &dep.spec.source {
+                    DepSource::Registry(Registry::CratesIo) => None,
+                    DepSource::Registry(Registry::Named(name)) => Some(name.as_str()),
+                    _ => continue,
+                };
+                candidates
+                    .entry((&dep.key, registry))
+                    .or_default()
+                    .push(dep);
             }
+            _ => {}
         }
     }
 
     let root_manifest = workspace.root_path.join("Cargo.toml");
     for ((key, registry), usages) in candidates {
-        let mut members: Vec<&str> = usages.iter().map(|(m, ..)| m.as_str()).collect();
-        // A member's usages are next to each other, because members are checked in turn.
+        let mut members: Vec<&str> = usages.iter().map(|dep| dep.member.as_str()).collect();
+        // Dedup works because `member_deps` groups the entries by member.
         members.dedup();
         if members.len() < promotion_threshold {
             continue;
@@ -90,41 +74,41 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
     findings
 }
 
-fn not_inherited(dep: &MemberDep, ws: &DepSpec, manifest: &Path, member_rel: &str) -> Finding {
+fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let key = &dep.key;
-    let member = member_rel.to_string();
+    let member = &dep.member;
     let (kind, description) = match (&dep.spec.version, &ws.version) {
         (Some(from), Some(to)) if from != to => (
             DiagnosticKind::VersionMismatch {
                 version: from.clone(),
-                member,
+                member: member.clone(),
                 workspace_version: to.clone(),
             },
-            format!("`{key}` in {member_rel} changed from {from} to {to} (workspace version)"),
+            format!("`{key}` in {member} changed from {from} to {to} (workspace version)"),
         ),
         (version, workspace_version) => (
             DiagnosticKind::NotInherited {
                 version: version.clone(),
-                member,
+                member: member.clone(),
                 workspace_version: workspace_version.clone(),
             },
-            format!("`{key}` in {member_rel} now uses workspace inheritance"),
+            format!("`{key}` in {member} now uses workspace inheritance"),
         ),
     };
     let fix = if !dep.spec.default_features && ws.default_features {
         Err(format!(
-            "`{key}` in {member_rel} sets `default-features = false`, so the workspace entry \
+            "`{key}` in {member} sets `default-features = false`, so the workspace entry \
              must set it too"
         ))
     } else if let (Some(version), None) = (&dep.spec.version, &ws.version) {
         Err(format!(
-            "`{key}` in {member_rel} requires version {version}, but the workspace entry has \
+            "`{key}` in {member} requires version {version}, but the workspace entry has \
              no version"
         ))
     } else {
         Ok(Fix {
             promotion: None,
-            edits: vec![edit(manifest, dep, ws.default_features)],
+            edits: vec![edit(dep, ws.default_features)],
             description,
         })
     };
@@ -141,35 +125,35 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec, manifest: &Path, member_rel: &st
 fn promotion_fix(
     key: &str,
     registry: Option<&str>,
-    usages: &[Usage],
+    usages: &[&MemberDep],
     members: &[&str],
     root_manifest: &Path,
 ) -> Result<Fix, String> {
-    let versions: BTreeSet<Option<&str>> = usages
+    let first = usages[0].spec.version.as_deref();
+    if usages
         .iter()
-        .map(|(.., dep)| dep.spec.version.as_deref())
-        .collect();
-    let version = match versions.into_iter().collect::<Vec<_>>()[..] {
-        [Some(version)] => version,
-        [None] => {
-            return Err(format!(
-                "`{key}` is not promoted, because no member gives a version"
-            ));
-        }
-        _ => {
-            let listed: Vec<String> = usages
-                .iter()
-                .map(|(m, _, dep)| format!("{m} ({})", dep.spec.version.as_deref().unwrap_or("*")))
-                .collect();
-            return Err(format!(
-                "`{key}` is not promoted, because members use different versions: {}",
-                listed.join(", "),
-            ));
-        }
+        .any(|dep| dep.spec.version.as_deref() != first)
+    {
+        let listed: Vec<String> = usages
+            .iter()
+            .map(|dep| {
+                let version = dep.spec.version.as_deref().unwrap_or("*");
+                format!("{} ({version})", dep.member)
+            })
+            .collect();
+        return Err(format!(
+            "`{key}` is not promoted, because members use different versions: {}",
+            listed.join(", "),
+        ));
+    }
+    let Some(version) = first else {
+        return Err(format!(
+            "`{key}` is not promoted, because no member gives a version"
+        ));
     };
     // Cargo ignores or rejects a member's `default-features = false` unless the workspace
     // entry also sets it, so one such member decides the workspace entry.
-    let default_features = usages.iter().all(|(.., dep)| dep.spec.default_features);
+    let default_features = usages.iter().all(|dep| dep.spec.default_features);
     let promotion = Promotion {
         root_manifest: root_manifest.to_path_buf(),
         key: key.to_string(),
@@ -186,36 +170,33 @@ fn promotion_fix(
         promotion: Some(promotion),
         edits: usages
             .iter()
-            .map(|(_, manifest, dep)| edit(manifest, dep, default_features))
+            .map(|dep| edit(dep, default_features))
             .collect(),
         description,
     })
 }
 
-fn edit(manifest: &Path, dep: &MemberDep, ws_default_features: bool) -> Edit {
+fn edit(dep: &MemberDep, ws_default_features: bool) -> Edit {
     Edit {
-        manifest: manifest.to_path_buf(),
+        manifest: dep.manifest.clone(),
         table: dep.table.clone(),
         key: dep.key.clone(),
         enable_default_features: dep.spec.default_features && !ws_default_features,
     }
 }
 
-/// The version that most crates declare, or `None` when no crate gives a version or several
-/// versions share the highest count.
-fn most_common_version(usages: &[Usage]) -> Option<String> {
+fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
     let declared: BTreeSet<(&str, &str)> = usages
         .iter()
-        .filter_map(|(member, _, dep)| Some((member.as_str(), dep.spec.version.as_deref()?)))
+        .filter_map(|dep| Some((dep.member.as_str(), dep.spec.version.as_deref()?)))
         .collect();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for (_, version) in declared {
         *counts.entry(version).or_default() += 1;
     }
-    let highest = *counts.values().max()?;
-    let mut top = counts.into_iter().filter(|&(_, count)| count == highest);
-    let (version, _) = top.next()?;
-    top.next().is_none().then(|| version.to_string())
+    let (version, highest) = counts.iter().max_by_key(|&(_, count)| count)?;
+    let tied = counts.values().filter(|&count| count == highest).count() > 1;
+    (!tied).then(|| version.to_string())
 }
 
 #[cfg(test)]

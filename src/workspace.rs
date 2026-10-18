@@ -6,7 +6,7 @@ use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
-use toml_edit::{DocumentMut, Item, TableLike};
+use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 /// A parsed workspace.
 #[derive(Debug)]
@@ -15,8 +15,9 @@ pub struct WorkspaceInfo {
     pub root_path: PathBuf,
     /// The entries of `[workspace.dependencies]`, by key.
     pub workspace_deps: BTreeMap<String, DepSpec>,
-    /// The members, sorted by manifest path.
-    pub members: Vec<MemberCrate>,
+    /// The member entries that do not use `workspace = true`, without the path and git entries
+    /// that give no version. They are grouped by member, in manifest path order.
+    pub member_deps: Vec<MemberDep>,
     /// The rules from `[workspace.metadata.inheritance-check]`.
     pub ignore_rules: Vec<IgnoreRule>,
 }
@@ -34,43 +35,29 @@ pub struct IgnoreRule {
 }
 
 impl IgnoreRule {
-    /// Whether the rule covers the entry `key` for `package` in one member.
-    ///
-    /// `member_manifest` is the member's manifest path from [`relative_manifest`], such as
-    /// `crates/bar/Cargo.toml`.
-    pub fn matches(&self, key: &str, package: &str, member_manifest: &str) -> bool {
-        if self.dependency != key && self.dependency != package {
+    /// Whether the rule covers `dep`.
+    pub fn matches(&self, dep: &MemberDep) -> bool {
+        if self.dependency != dep.key && self.dependency != dep.spec.package {
             return false;
         }
-        let Some(scope) = &self.member else {
-            return true;
-        };
-        let scope = scope.replace('\\', "/");
+        let scope = self.member.as_deref().unwrap_or(".").replace('\\', "/");
         let scope = scope.trim_start_matches("./").trim_end_matches('/');
         if scope.is_empty() || scope == "." {
             return true;
         }
-        member_manifest == scope
-            || member_manifest
-                .strip_prefix(scope)
-                .is_some_and(|rest| rest.starts_with('/'))
+        dep.member
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     }
-}
-
-/// A member crate and the dependency entries it declares itself.
-#[derive(Debug)]
-pub struct MemberCrate {
-    pub manifest_path: PathBuf,
-    /// The entries that do not use `workspace = true`, without the path and git entries that
-    /// give no version.
-    pub dependencies: Vec<MemberDep>,
 }
 
 /// A dependency entry that a member declares instead of inheriting it.
 #[derive(Debug)]
 pub struct MemberDep {
+    pub manifest: PathBuf,
+    /// The member's manifest path from [`relative_manifest`], which the diagnostics show.
+    pub member: String,
     pub table: DepTable,
-    /// The entry's key, which is also the key that cargo inherits by.
     pub key: String,
     pub spec: DepSpec,
 }
@@ -181,7 +168,6 @@ fn dep_tables(doc: &DocumentMut) -> impl Iterator<Item = (DepTable, &dyn TableLi
         })
 }
 
-/// The dependency table `table` in `doc`, if it exists.
 pub(crate) fn dep_table_mut<'a>(
     doc: &'a mut DocumentMut,
     table: &DepTable,
@@ -216,31 +202,36 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .and_then(Item::as_table_like)
         .ok_or_else(|| format!("No [workspace] section in {}", root_toml_path.display()))?;
 
-    let workspace_deps = parse_workspace_deps(workspace_table, path);
+    let workspace_deps = workspace_table
+        .get("dependencies")
+        .and_then(Item::as_table_like)
+        .into_iter()
+        .flat_map(|deps| deps.iter())
+        .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, path)?)))
+        .collect();
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
     let metadata = cargo_metadata(path)?;
-    let mut manifest_paths: Vec<PathBuf> = metadata
+    let mut manifests: Vec<PathBuf> = metadata
         .packages
         .into_iter()
         .map(|p| p.manifest_path)
         .collect();
-    manifest_paths.sort();
-    let members = manifest_paths
-        .into_iter()
-        .map(parse_member)
-        .collect::<Result<_, _>>()?;
+    manifests.sort();
+    let mut member_deps = Vec::new();
+    for manifest in manifests {
+        member_deps.extend(parse_member(&metadata.workspace_root, manifest)?);
+    }
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,
         workspace_deps,
-        members,
+        member_deps,
         ignore_rules,
     })
 }
 
-/// The parts of `cargo metadata --no-deps` output that the check reads. With `--no-deps`,
-/// `packages` holds exactly the workspace members.
+/// With `--no-deps`, `packages` holds exactly the workspace members.
 #[derive(Deserialize)]
 struct Metadata {
     workspace_root: PathBuf,
@@ -252,8 +243,6 @@ struct MetadataPackage {
     manifest_path: PathBuf,
 }
 
-/// Ask cargo for the member set, so it follows cargo's rules: the root package, path
-/// dependencies inside the root, and `exclude`.
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
@@ -277,23 +266,19 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
 fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, String> {
     let Some(ignore) = workspace
         .get("metadata")
-        .and_then(Item::as_table_like)
-        .and_then(|t| t.get("inheritance-check"))
-        .and_then(Item::as_table_like)
-        .and_then(|t| t.get("ignore"))
+        .and_then(|metadata| metadata.get("inheritance-check"))
+        .and_then(|config| config.get("ignore"))
     else {
         return Ok(Vec::new());
     };
     // `ignore = [{ .. }]` holds inline tables; `[[...ignore]]` is an array of tables.
-    let rules = if let Some(array) = ignore.as_array() {
-        array
+    let rules = match ignore {
+        Item::Value(Value::Array(array)) => array
             .iter()
             .map(|v| rule_from_table_like(v.as_inline_table()?))
-            .collect()
-    } else if let Some(tables) = ignore.as_array_of_tables() {
-        tables.iter().map(|t| rule_from_table_like(t)).collect()
-    } else {
-        None
+            .collect(),
+        Item::ArrayOfTables(tables) => tables.iter().map(|t| rule_from_table_like(t)).collect(),
+        _ => None,
     };
     rules.ok_or_else(|| {
         "Invalid `ignore` in [workspace.metadata.inheritance-check]: expected an array of \
@@ -303,57 +288,46 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
-    // An unknown key, such as a misspelled `member`, or a `member` that is not a string makes
-    // the rule invalid, so a mistake never widens it to every crate.
-    if table
+    // An unknown key, such as a misspelled `member`, or a value that is not a string makes the
+    // rule invalid, so a mistake never widens it to every crate.
+    if !table
         .iter()
-        .any(|(key, _)| key != "dependency" && key != "member")
+        .all(|(key, value)| matches!(key, "dependency" | "member") && value.is_str())
     {
         return None;
     }
-    let dependency = table.get("dependency")?.as_str()?.to_string();
-    let member = match table.get("member") {
-        None => None,
-        Some(member) => Some(member.as_str()?.to_string()),
-    };
-    Some(IgnoreRule { dependency, member })
+    Some(IgnoreRule {
+        dependency: str_field(table, "dependency")?,
+        member: str_field(table, "member"),
+    })
 }
 
-fn parse_workspace_deps(workspace: &dyn TableLike, root: &Path) -> BTreeMap<String, DepSpec> {
-    workspace
-        .get("dependencies")
-        .and_then(Item::as_table_like)
-        .into_iter()
-        .flat_map(|deps| deps.iter())
-        .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, root)?)))
-        .collect()
-}
-
-fn parse_member(manifest_path: PathBuf) -> Result<MemberCrate, String> {
-    let doc = read_manifest(&manifest_path)?;
-    let manifest_dir = manifest_path
+fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String> {
+    let doc = read_manifest(&manifest)?;
+    let manifest_dir = manifest
         .parent()
         .expect("a manifest path ends in Cargo.toml");
-
-    let dependencies = dep_tables(&doc)
-        .flat_map(|(table, entries)| {
-            entries.iter().filter_map(move |(key, item)| {
-                let spec = parse_spec(key, item, manifest_dir)?;
-                // A path or git dependency without a version has no version to compare.
-                if spec.version.is_none() && !matches!(spec.source, DepSource::Registry(_)) {
-                    return None;
-                }
-                let key = key.to_string();
-                let table = table.clone();
-                Some(MemberDep { table, key, spec })
-            })
-        })
-        .collect();
-
-    Ok(MemberCrate {
-        manifest_path,
-        dependencies,
-    })
+    let member = relative_manifest(root, &manifest);
+    let mut deps = Vec::new();
+    for (table, entries) in dep_tables(&doc) {
+        for (key, item) in entries.iter() {
+            let Some(spec) = parse_spec(key, item, manifest_dir) else {
+                continue;
+            };
+            // A path or git dependency without a version has no version to compare.
+            if spec.version.is_none() && !matches!(spec.source, DepSource::Registry(_)) {
+                continue;
+            }
+            deps.push(MemberDep {
+                manifest: manifest.clone(),
+                member: member.clone(),
+                table: table.clone(),
+                key: key.to_string(),
+                spec,
+            });
+        }
+    }
+    Ok(deps)
 }
 
 /// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
