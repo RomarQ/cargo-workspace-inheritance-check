@@ -2,7 +2,7 @@
 //! dependency entries that each member declares.
 
 use std::collections::BTreeMap;
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
@@ -51,8 +51,8 @@ impl IgnoreRule {
 #[derive(Debug, Clone)]
 pub struct MemberDep {
     pub manifest: PathBuf,
-    /// The manifest path, relative to the workspace root when the member is inside it, with
-    /// `/` separators on every OS.
+    /// The manifest path relative to the workspace root, such as `../outside/Cargo.toml` for a
+    /// member outside it, with `/` separators on every OS.
     pub member: String,
     pub table: DepTable,
     pub key: String,
@@ -293,8 +293,9 @@ fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String
     let manifest_dir = manifest
         .parent()
         .expect("a manifest path ends in Cargo.toml");
-    let relative = manifest.strip_prefix(root).unwrap_or(&manifest);
-    let member = relative.to_string_lossy().replace(MAIN_SEPARATOR, "/");
+    let member = relative_to(&manifest, root)
+        .to_string_lossy()
+        .replace(MAIN_SEPARATOR, "/");
     let mut deps = Vec::new();
     for (table, entries) in dep_tables(&doc) {
         for (key, item) in entries.iter() {
@@ -315,6 +316,24 @@ fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String
         }
     }
     Ok(deps)
+}
+
+/// `path` from `base`, with a `..` for each part of `base` that is not above `path`. Both must be
+/// normalized, as cargo reports them. `path` stays absolute when the two share no prefix, such as
+/// another drive on Windows.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let shared = path
+        .components()
+        .zip(base.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if shared == 0 {
+        return path.to_path_buf();
+    }
+    let up = base.components().count() - shared;
+    std::iter::repeat_n(Component::ParentDir, up)
+        .chain(path.components().skip(shared))
+        .collect()
 }
 
 /// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
@@ -386,5 +405,22 @@ mod tests {
             let err = parse_workspace(&fixture(name)).unwrap_err();
             assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn test_member_outside_the_root_is_named_and_ignored_from_the_root() {
+        let ws = parse_workspace(&fixture("outside_member/ws")).unwrap();
+        let deps: Vec<_> = ws
+            .member_deps
+            .iter()
+            .map(|d| (d.key.as_str(), d.member.as_str()))
+            .collect();
+        assert_eq!(
+            deps,
+            [
+                ("serde", "../outside/Cargo.toml"),
+                ("serde", "crates/a/Cargo.toml")
+            ]
+        );
     }
 }
