@@ -11,8 +11,10 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Run the binary as `cargo workspace-inheritance-check` does, with the subcommand name first.
 fn run(root: &Path, args: &[&str]) -> Output {
     Command::new(cargo_bin())
+        .arg("workspace-inheritance-check")
         .arg("--path")
         .arg(root)
         .args(args)
@@ -94,6 +96,15 @@ fn test_promotion_failure_flag() {
     assert!(
         !output.status.success(),
         "--promotion-failure should cause exit 1"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("error: `serde_yaml` appears in 2 crates"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with("\n\n1 error, 0 warnings found\n"),
+        "{stdout}"
     );
 }
 

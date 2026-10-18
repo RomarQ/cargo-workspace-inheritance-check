@@ -421,8 +421,8 @@ mod tests {
             "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        let result = parse_workspace(dir.path());
-        assert!(result.is_err());
+        let err = parse_workspace(dir.path()).unwrap_err();
+        assert!(err.starts_with("No [workspace] section in "), "{err}");
     }
 
     #[test]

@@ -323,31 +323,34 @@ mod tests {
         let tmp = temp_workspace(
             "core = { path = \"crates/core\", version = \"0.1\" }\n\
              serde1 = { package = \"serde\", version = \"1.0\" }\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }",
+             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\
+             log = { version = \"0.4\", default-features = false }",
             &[
                 ("core", "\n[features]\nx = []"),
                 (
                     "app",
                     "core = { version = \"0.1\", path = \"../core\", features = [\"x\"], optional = true }\n\
                      serde1 = { package = \"serde\", version = \"1.0\", default-features = true }\n\
-                     my-crate = { version = \"1.0\", registry = \"my-registry\", features = [\"y\"] }",
+                     my-crate = { version = \"1.0\", registry = \"my-registry\", features = [\"y\"] }\n\
+                     log = { version = \"0.4\", default-features = false }",
                 ),
             ],
         );
         let (summary, after) = fix(&tmp);
-        assert_eq!(summary.fixed.len(), 3);
+        assert_eq!(summary.fixed.len(), 4);
         let app = "crates/app/Cargo.toml";
         let keys = |key| entry_keys(&tmp, app, &["dependencies", key]);
         assert_eq!(keys("core"), ["workspace", "features", "optional"]);
         assert_eq!(keys("serde1"), ["workspace"]);
         assert_eq!(keys("my-crate"), ["workspace", "features"]);
+        assert_eq!(keys("log"), ["workspace"]);
         assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
     fn test_fix_dotted_table() {
         let tmp = temp_workspace(
-            "serde = \"1.0\"",
+            "serde = { version = \"1.0\", default-features = false }",
             &[(
                 "app",
                 "\n[dependencies.serde]\nversion = \"1.0\"\nfeatures = [\"derive\"]",
@@ -355,7 +358,7 @@ mod tests {
         );
         let (_, after) = fix(&tmp);
         let keys = entry_keys(&tmp, "crates/app/Cargo.toml", &["dependencies", "serde"]);
-        assert_eq!(keys, ["features", "workspace"]);
+        assert_eq!(keys, ["features", "workspace", "default-features"]);
         assert!(after.is_empty(), "{after:?}");
     }
 
@@ -375,11 +378,11 @@ mod tests {
         let tmp = temp_workspace(
             "",
             &[
+                ("one", "ed25519-dalek = \"2.1\""),
                 (
-                    "one",
+                    "two",
                     "ed25519-dalek = { version = \"2.1\", default_features = false }",
                 ),
-                ("two", "ed25519-dalek = \"2.1\""),
             ],
         );
         let (_, after) = fix(&tmp);
@@ -388,15 +391,15 @@ mod tests {
             root.contains("ed25519-dalek = { version = \"2.1\", default-features = false }"),
             "{root}"
         );
+        let one = read_file(&tmp, "crates/one/Cargo.toml");
+        assert!(
+            one.contains("ed25519-dalek = { workspace = true, default-features = true }"),
+            "{one}"
+        );
         let entry = ["dependencies", "ed25519-dalek"];
         assert_eq!(
-            entry_keys(&tmp, "crates/one/Cargo.toml", &entry),
+            entry_keys(&tmp, "crates/two/Cargo.toml", &entry),
             ["workspace"]
-        );
-        let two = read_file(&tmp, "crates/two/Cargo.toml");
-        assert!(
-            two.contains("ed25519-dalek = { workspace = true, default-features = true }"),
-            "{two}"
         );
         assert!(after.is_empty(), "{after:?}");
     }
@@ -413,8 +416,13 @@ mod tests {
         let before = read_file(&tmp, "crates/app/Cargo.toml");
         let (summary, after) = fix(&tmp);
         assert!(summary.fixed.is_empty());
-        assert_eq!(summary.skipped.len(), 1);
-        assert!(summary.skipped[0].starts_with("skipped: `serde` in crates/app/Cargo.toml"));
+        assert_eq!(
+            summary.skipped,
+            [
+                "skipped: `serde` in crates/app/Cargo.toml sets `default-features = false`, so \
+                 the workspace entry must set it too"
+            ]
+        );
         assert_eq!(read_file(&tmp, "crates/app/Cargo.toml"), before);
         assert_eq!(after.len(), 1);
     }

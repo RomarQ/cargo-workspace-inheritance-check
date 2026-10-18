@@ -433,6 +433,21 @@ mod tests {
     }
 
     #[test]
+    fn test_ignore_rule_matches_key_or_package() {
+        let renamed = "serde1 = { package = \"serde\", version = \"1.0\" }\n\
+                       md5 = { package = \"md-5\", version = \"0.10\" }";
+        let tmp = temp_workspace(
+            &format!(
+                "{renamed}\n\n[workspace.metadata.inheritance-check]\n\
+                 ignore = [{{ dependency = \"serde\" }}, {{ dependency = \"md5\" }}]"
+            ),
+            &[("a", renamed)],
+        );
+        let diags = check(tmp.path(), 2);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
     fn test_ignore_rule_scopes_for_the_root() {
         let tmp = temp_workspace(
             "serde = \"1.0\"\nrand = \"0.8\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
