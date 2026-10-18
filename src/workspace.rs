@@ -97,14 +97,15 @@ pub struct DepSpec {
 }
 
 /// Where a dependency comes from.
+///
+/// The `registry` of a path or git dependency is the registry that `cargo publish` writes for
+/// it, so two entries that differ only there are different dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepSource {
-    /// A registry by name, where `None` is crates.io.
-    Registry(Option<String>),
-    /// A registry by index URL, from `registry-index`.
-    RegistryIndex(String),
+    /// A dependency from a registry.
+    Registry(Registry),
     /// A local path, resolved against the directory of the manifest that declares it.
-    Path(PathBuf),
+    Path { path: PathBuf, registry: Registry },
     /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
     /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
     Git {
@@ -112,7 +113,19 @@ pub enum DepSource {
         branch: Option<String>,
         tag: Option<String>,
         rev: Option<String>,
+        registry: Registry,
     },
+}
+
+/// The registry that an entry names with `registry` or `registry-index`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Registry {
+    /// crates.io, when the entry names no registry or names `crates-io`.
+    CratesIo,
+    /// An alternate registry by name, from `registry`.
+    Named(String),
+    /// A registry by index URL, from `registry-index`.
+    Index(String),
 }
 
 /// Dependency table names. Cargo accepts the underscore spellings before edition 2024.
@@ -349,7 +362,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     if let Some(version) = item.as_str() {
         return Some(DepSpec {
             package: key.to_string(),
-            source: DepSource::Registry(None),
+            source: DepSource::Registry(Registry::CratesIo),
             version: Some(version.to_string()),
             default_features: true,
         });
@@ -358,9 +371,15 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     if t.get("workspace").and_then(Item::as_bool) == Some(true) {
         return None;
     }
+    let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
+        (Some(index), _) => Registry::Index(index),
+        (None, Some(name)) if name != "crates-io" => Registry::Named(name),
+        (None, _) => Registry::CratesIo,
+    };
     let source = if let Some(path) = str_field(t, "path") {
         let path = manifest_dir.join(path);
-        DepSource::Path(std::fs::canonicalize(&path).unwrap_or(path))
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        DepSource::Path { path, registry }
     } else if let Some(url) = str_field(t, "git") {
         let url = url.strip_suffix('/').unwrap_or(&url);
         DepSource::Git {
@@ -368,12 +387,10 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
             branch: str_field(t, "branch"),
             tag: str_field(t, "tag"),
             rev: str_field(t, "rev"),
+            registry,
         }
-    } else if let Some(index) = str_field(t, "registry-index") {
-        DepSource::RegistryIndex(index)
     } else {
-        // Cargo reads the registry name `crates-io` as crates.io.
-        DepSource::Registry(str_field(t, "registry").filter(|r| r != "crates-io"))
+        DepSource::Registry(registry)
     };
     let default_features = t
         .get("default-features")

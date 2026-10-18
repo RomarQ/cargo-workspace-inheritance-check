@@ -7,8 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
-- A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, `registry-index`, path, or git). For a renamed entry, the JSON `dependency` value is the key.
-- Renamed, path, and git dependencies are not promotion candidates. A promotion counts each crate once, and it gives no suggested version when two versions tie.
+- A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, `registry-index`, path, or git). A path or git entry must also name the same `registry` or `registry-index`. For a renamed entry, the JSON `dependency` value is the key.
+- Renamed, `registry-index`, path, and git dependencies are not promotion candidates. A promotion counts each crate once, and it gives no suggested version when two versions tie.
 - `--fix` checks the workspace again after the fixes, prints that report in the selected `--format`, and exits 1 when errors remain, unless `--no-fail` is set.
 - An invalid ignore rule, including one with an unknown key, is an error. A rule's `dependency` matches the key or the package name. `member` accepts a leading `./`, `.` covers every crate, and a manifest path such as `Cargo.toml` covers only that crate.
 - `--promotion-threshold 0` is rejected.

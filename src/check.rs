@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::fix::{Edit, Fix, Promotion};
-use crate::workspace::{DepSource, DepSpec, MemberDep, WorkspaceInfo, relative_manifest};
+use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo, relative_manifest};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
 #[derive(Debug)]
@@ -22,10 +22,10 @@ type Usage<'a> = (String, &'a Path, &'a MemberDep);
 /// Check every member entry that does not inherit from the workspace.
 ///
 /// An entry inherits by its key, as in cargo. So it is reported against the workspace entry
-/// with the same key, when both name the same package from the same source. A registry
-/// dependency that is not renamed and whose key is not in the workspace is a promotion
-/// candidate when at least `promotion_threshold` crates declare it with the same registry.
-/// Entries that an ignore rule covers are skipped.
+/// with the same key, when both name the same package from the same source. A promotion
+/// candidate is an entry from crates.io or a named registry, with no rename and a key that the
+/// workspace does not have. At least `promotion_threshold` crates must declare it with the same
+/// registry. Entries that an ignore rule covers are skipped.
 pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut candidates: BTreeMap<(&str, Option<&str>), Vec<Usage>> = BTreeMap::new();
@@ -48,13 +48,17 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 // can neither inherit it nor be promoted under it.
                 Some(_) => {}
                 None => {
-                    if let DepSource::Registry(registry) = &dep.spec.source
-                        && dep.spec.package == dep.key
-                    {
-                        candidates
-                            .entry((&dep.key, registry.as_deref()))
-                            .or_default()
-                            .push((member_rel.clone(), &member.manifest_path, dep));
+                    let registry = match &dep.spec.source {
+                        DepSource::Registry(Registry::CratesIo) => None,
+                        DepSource::Registry(Registry::Named(name)) => Some(name.as_str()),
+                        _ => continue,
+                    };
+                    if dep.spec.package == dep.key {
+                        candidates.entry((&dep.key, registry)).or_default().push((
+                            member_rel.clone(),
+                            &member.manifest_path,
+                            dep,
+                        ));
                     }
                 }
             }
@@ -348,21 +352,28 @@ mod tests {
     #[test]
     fn test_other_sources_are_neither_matched_nor_promoted() {
         let tmp = temp_workspace(
-            "core = { path = \"crates/core\", version = \"0.1\" }\nlocal = \"0.1\"\nidx = \"0.1\"",
+            "core = { path = \"crates/core\", version = \"0.1\" }\n\
+             reg = { path = \"crates/reg\", version = \"0.1\" }\n\
+             foo = { git = \"https://example.invalid/foo\", version = \"0.1\" }\n\
+             local = \"0.1\"\nidx = \"0.1\"",
             &[
                 ("core", ""),
+                ("reg", ""),
                 ("local", ""),
                 ("other", ""),
                 (
                     "a",
                     "core = { path = \"../core\", version = \"0.1\" }\n\
+                     reg = { path = \"../reg\", version = \"0.1\", registry = \"my-registry\" }\n\
+                     foo = { git = \"https://example.invalid/foo\", branch = \"dev\", version = \"0.1\" }\n\
                      local = { path = \"../local\", version = \"0.1\" }\n\
                      other = { path = \"../other\", version = \"0.1\" }\n\
                      idx = { version = \"0.1\", registry-index = \"sparse+https://example.invalid/index/\" }",
                 ),
                 (
                     "b",
-                    "local = { path = \"../local\", version = \"0.1\" }\n\
+                    "core = { path = \"../core\" }\n\
+                     local = { path = \"../local\", version = \"0.1\" }\n\
                      other = { path = \"../other\", version = \"0.1\" }",
                 ),
             ],

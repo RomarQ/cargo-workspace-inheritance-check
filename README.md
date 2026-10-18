@@ -45,10 +45,10 @@ By default, this is reported as a **warning** and does not cause the tool to exi
 ### How entries are compared
 
 - The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo.
-- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. As in cargo, a git URL matches with or without a trailing `/` or `.git`, and `registry = "crates-io"` is crates.io. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
+- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. A path or git entry must also name the same `registry` or `registry-index`, because `cargo publish` writes that registry for the dependency. As in cargo, a git URL matches with or without a trailing `/` or `.git`, and `registry = "crates-io"` is crates.io. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
 - Versions are compared as written, so `"1"` and `"1.0"` count as a version mismatch.
 - A path or git dependency without a version is not checked.
-- A promotion candidate is a registry dependency that is not renamed. Each crate counts once, even when it lists the dependency in several sections.
+- A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A `registry-index`, path, or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
 
 ## Installation
 
