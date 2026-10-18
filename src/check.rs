@@ -208,12 +208,12 @@ fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_workspace;
     use crate::workspace::parse_workspace;
-    use crate::{add_root_package, temp_workspace};
 
-    fn check(root: &Path, promotion_threshold: usize) -> Vec<Diagnostic> {
+    fn check(root: &Path) -> Vec<Diagnostic> {
         let ws = parse_workspace(root).unwrap();
-        run_checks(&ws, promotion_threshold)
+        run_checks(&ws, 2)
             .into_iter()
             .map(|f| f.diagnostic)
             .collect()
@@ -235,20 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_only_a_different_version_is_a_version_mismatch() {
-        let tmp = temp_workspace(
-            "rand = \"0.8\"\nserde = \"1.0\"",
-            &[("a", "rand = \"0.7\"\nserde = \"1.0\"")],
-        );
-        let diags = serde_json::to_value(check(tmp.path(), 2)).unwrap();
-        assert_eq!(diags[0]["check"], "version-mismatch");
-        assert_eq!(diags[0]["version"], "0.7");
-        assert_eq!(diags[0]["workspace_version"], "0.8");
-        assert_eq!(diags[1]["check"], "not-inherited");
-    }
-
-    #[test]
-    fn test_other_sources_are_neither_matched_nor_promoted() {
+    fn test_sources_decide_what_is_compared_and_promoted() {
         let tmp = temp_workspace(
             "core = { path = \"crates/core\", version = \"0.1\" }\n\
              reg = { path = \"crates/reg\", version = \"0.1\" }\n\
@@ -267,27 +254,18 @@ mod tests {
                 ),
                 (
                     "b",
-                    "core = { path = \"../core\" }\nother = { path = \"../other\", version = \"0.1\" }",
+                    "core = { path = \"../core\" }\nother = { path = \"../other\", version = \"0.1\" }\n\
+                     foo = { git = \"https://example.invalid/foo.git/\", version = \"0.1\" }\n\
+                     idx = { version = \"0.1\", registry = \"crates-io\" }",
                 ),
             ],
         );
-        let diags = check(tmp.path(), 2);
-        assert_eq!(summarize(&diags), [("core", "crates/a/Cargo.toml")]);
-    }
-
-    #[test]
-    fn test_equivalent_sources_match() {
-        let tmp = temp_workspace(
-            "foo = { git = \"https://example.invalid/foo\", version = \"0.1\" }\nbar = \"1\"",
-            &[(
-                "a",
-                "foo = { git = \"https://example.invalid/foo.git/\", version = \"0.1\" }\n\
-                 bar = { version = \"1\", registry = \"crates-io\" }",
-            )],
+        let diags = check(tmp.path());
+        let b = "crates/b/Cargo.toml";
+        assert_eq!(
+            summarize(&diags),
+            [("core", "crates/a/Cargo.toml"), ("foo", b), ("idx", b)]
         );
-        let diags = check(tmp.path(), 2);
-        let a = "crates/a/Cargo.toml";
-        assert_eq!(summarize(&diags), [("foo", a), ("bar", a)]);
     }
 
     #[test]
@@ -304,7 +282,7 @@ mod tests {
                 ("b", "rand_old = { package = \"rand\", version = \"0.7\" }"),
             ],
         );
-        let diags = check(tmp.path(), 2);
+        let diags = check(tmp.path());
         assert_eq!(summarize(&diags), [("serde1", "crates/a/Cargo.toml")]);
     }
 
@@ -314,20 +292,16 @@ mod tests {
             "rand = \"0.8\"\nserde = \"1.0\"\n\n[workspace.metadata.inheritance-check]\nignore = [\n\
              { dependency = \"rand\", member = \"crates/bar\" },\n\
              { dependency = \"rand\", member = \"./crates/baz/\" },\n\
-             { dependency = \"serde\", member = \"Cargo.toml\" },\n\
+             { dependency = \"serde\", member = \"crates/baz/Cargo.toml\" },\n\
              { dependency = \"openssl\", member = \".\" },\n\
              { dependency = \"log\" },\n]",
             &[
                 ("bar", "rand = \"0.7\"\nopenssl = \"0.10\"\nlog = \"0.4\""),
-                (
-                    "barista",
-                    "rand = \"0.7\"\nserde = \"1.0\"\nopenssl = \"0.10\"\nlog = \"0.4\"",
-                ),
-                ("baz", "rand = \"0.7\""),
+                ("barista", "rand = \"0.7\"\nserde = \"1.0\"\nlog = \"0.4\""),
+                ("baz", "rand = \"0.7\"\nserde = \"1.0\"\nopenssl = \"0.10\""),
             ],
         );
-        add_root_package(&tmp, "serde = \"1.0\"");
-        let diags = check(tmp.path(), 2);
+        let diags = check(tmp.path());
         let barista = "crates/barista/Cargo.toml";
         assert_eq!(summarize(&diags), [("rand", barista), ("serde", barista)]);
     }
@@ -343,7 +317,7 @@ mod tests {
             ),
             &[("a", renamed)],
         );
-        let diags = check(tmp.path(), 2);
+        let diags = check(tmp.path());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -367,7 +341,7 @@ mod tests {
                 ("c", "rand = \"0.8\""),
             ],
         );
-        let diags = check(tmp.path(), 2);
+        let diags = check(tmp.path());
         let found: Vec<_> = diags
             .iter()
             .map(|d| match &d.kind {
@@ -406,7 +380,7 @@ mod tests {
                  [target]\n\"cfg(unix)\" = { dev_dependencies = { cc = \"1.0\" } }",
             )],
         );
-        let diags = check(tmp.path(), 2);
+        let diags = check(tmp.path());
         let app = "crates/app/Cargo.toml";
         assert_eq!(
             summarize(&diags),

@@ -44,18 +44,3 @@ pub(crate) fn temp_workspace(workspace_deps: &str, members: &[(&str, &str)]) -> 
     }
     tmp
 }
-
-/// Make the root of a [`temp_workspace`] a package too, with `deps` under its `[dependencies]`.
-#[cfg(test)]
-pub(crate) fn add_root_package(tmp: &tempfile::TempDir, deps: &str) {
-    let manifest = tmp.path().join("Cargo.toml");
-    let workspace = std::fs::read_to_string(&manifest).unwrap();
-    let package = "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n";
-    std::fs::write(
-        &manifest,
-        format!("{package}[dependencies]\n{deps}\n\n{workspace}"),
-    )
-    .unwrap();
-    std::fs::create_dir(tmp.path().join("src")).unwrap();
-    std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
-}

@@ -1,13 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 const BIN: &str = env!("CARGO_BIN_EXE_cargo-workspace-inheritance-check");
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
-}
 
 /// Run the binary as `cargo workspace-inheritance-check` does, with the subcommand name first.
 fn run(root: &Path, args: &[&str]) -> Output {
@@ -46,9 +40,9 @@ fn cargo_metadata(root: &Path) -> serde_json::Value {
 
 #[test]
 fn test_promotion_candidates_fail_only_with_promotion_failure() {
-    let root = fixture("promotion_candidate");
-    assert!(run(&root, &[]).status.success());
-    let output = run(&root, &["--promotion-failure"]);
+    let root = Path::new("tests/fixtures/promotion_candidate");
+    assert!(run(root, &[]).status.success());
+    let output = run(root, &["--promotion-failure"]);
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
@@ -59,18 +53,24 @@ fn test_promotion_candidates_fail_only_with_promotion_failure() {
          1 error, 0 warnings found\n"
     );
     let higher_threshold = ["--promotion-failure", "--promotion-threshold", "3"];
-    assert!(run(&root, &higher_threshold).status.success());
+    assert!(run(root, &higher_threshold).status.success());
 }
 
 #[test]
-fn test_member_paths_are_relative_to_the_workspace_root() {
+fn test_version_mismatch_json_names_the_member_relative_to_the_workspace_root() {
+    // Run the binary on its own, without the subcommand name. The relative `--path` catches a
+    // member path made from `--path` instead of the workspace root.
     let output = Command::new(BIN)
-        .current_dir(fixture(""))
+        .current_dir("tests/fixtures")
         .args(["--path", "./version_mismatch", "--format", "json"])
         .output()
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(parsed["diagnostics"][0]["member"], "crates/bar/Cargo.toml");
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["check"], "version-mismatch");
+    assert_eq!(diagnostic["version"], "0.7");
+    assert_eq!(diagnostic["workspace_version"], "0.8");
+    assert_eq!(diagnostic["member"], "crates/bar/Cargo.toml");
 }
 
 #[test]
@@ -100,8 +100,7 @@ fn test_fix_keeps_what_cargo_resolves() {
     let tmp = temp_tree(&[
         (
             "Cargo.toml",
-            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n\
-             [workspace.dependencies]\nserde = \"1.0\"\n\
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nserde = \"1.0\"\n\
              tokio = { version = \"1\", default-features = false }\n",
         ),
         (

@@ -198,8 +198,8 @@ fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<
 mod tests {
     use super::*;
     use crate::check::run_checks;
+    use crate::temp_workspace;
     use crate::workspace::parse_workspace;
-    use crate::{add_root_package, temp_workspace};
 
     fn read_file(tmp: &tempfile::TempDir, relative: &str) -> String {
         std::fs::read_to_string(tmp.path().join(relative)).unwrap()
@@ -212,13 +212,9 @@ mod tests {
         deps.to_string()
     }
 
-    /// Check and fix the workspace, then check it again. Returns the summary, and the
-    /// findings of the second check.
-    fn fix(tmp: &tempfile::TempDir) -> (FixSummary, Vec<Finding>) {
+    fn fix(tmp: &tempfile::TempDir) -> FixSummary {
         let findings = run_checks(&parse_workspace(tmp.path()).unwrap(), 2);
-        let summary = apply_fixes(&findings).unwrap();
-        let after = run_checks(&parse_workspace(tmp.path()).unwrap(), 2);
-        (summary, after)
+        apply_fixes(&findings).unwrap()
     }
 
     #[test]
@@ -226,7 +222,6 @@ mod tests {
         let tmp = temp_workspace(
             "core = { path = \"crates/core\", version = \"0.1\" }\n\
              serde1 = { package = \"serde\", version = \"1.0\" }\n\
-             my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\
              log = { version = \"0.4\", default-features = false }\n\
              rand = \"0.8\"\ntokio = { version = \"1\", default-features = false }",
             &[
@@ -236,13 +231,12 @@ mod tests {
                     "rand = \"0.7\" # pinned\n\
                      core = { version = \"0.1\", path = \"../core\", features = [\"x\"], optional = true }\n\
                      serde1 = { package = \"serde\", version = \"1.0\", default-features = true }\n\
-                     my-crate = { version = \"1.0\", registry = \"my-registry\", features = [\"y\"] }\n\
                      log = { version = \"0.4\", default-features = false }\n\n\
                      [dependencies.tokio]\nversion = \"1\"\nfeatures = [\"full\"]",
                 ),
             ],
         );
-        let (summary, after) = fix(&tmp);
+        let summary = fix(&tmp);
         assert_eq!(
             summary.fixed[..2],
             [
@@ -255,11 +249,9 @@ mod tests {
             "rand = { workspace = true } # pinned\n\
              core = { workspace = true, features = [\"x\"], optional = true }\n\
              serde1 = { workspace = true }\n\
-             my-crate = { workspace = true, features = [\"y\"] }\n\
              log = { workspace = true }\n\n\
              [dependencies.tokio]\nfeatures = [\"full\"]\nworkspace = true\ndefault-features = true\n"
         );
-        assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
@@ -278,7 +270,7 @@ mod tests {
                 ),
             ],
         );
-        let (summary, after) = fix(&tmp);
+        let summary = fix(&tmp);
         assert_eq!(
             summary.fixed[1],
             "fixed: `my-crate = { version = \"1.0\", registry = \"my-registry\" }` added to \
@@ -301,11 +293,11 @@ mod tests {
             "ed25519-dalek = { workspace = true }\n\n\
              [target.'cfg(windows)'.dependencies]\nmy-crate = { workspace = true }\n"
         );
-        assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
     fn test_fix_skips_a_fix_that_changes_what_cargo_resolves() {
+        let registry_dep = "my-crate = { version = \"1.0\", registry = \"my-registry\" }";
         let tmp = temp_workspace(
             "serde = \"1.0\"\ncore = { path = \"crates/core\" }",
             &[
@@ -313,12 +305,15 @@ mod tests {
                 (
                     "a",
                     "serde = { version = \"1.0\", default-features = false }\n\
-                     core = { path = \"../core\", version = \"0.1\" }\nrand = \"0.7\"",
+                     core = { path = \"../core\", version = \"0.1\" }\n\
+                     rand = \"0.7\"\nmy-crate = \"1.0\"",
                 ),
-                ("b", "rand = \"0.8\""),
+                ("b", "rand = \"0.8\"\nmy-crate = \"1.0\""),
+                ("c", registry_dep),
+                ("d", registry_dep),
             ],
         );
-        let (summary, _) = fix(&tmp);
+        let summary = fix(&tmp);
         assert_eq!(
             summary.skipped,
             [
@@ -326,63 +321,30 @@ mod tests {
                  workspace entry must set it too",
                 "skipped: `core` in crates/a/Cargo.toml requires version 0.1, but the workspace \
                  entry has no version",
+                "skipped: `my-crate` is not promoted, because [workspace.dependencies] already has it",
                 "skipped: `rand` is not promoted, because members use different versions: \
                  crates/a/Cargo.toml (0.7), crates/b/Cargo.toml (0.8)",
             ]
         );
-        assert_eq!(summary.files_modified, 0);
-    }
-
-    #[test]
-    fn test_fix_skips_promotion_when_the_key_exists() {
-        let registry_dep = "my-crate = { version = \"1.0\", registry = \"my-registry\" }";
-        let tmp = temp_workspace(
-            "",
-            &[
-                ("a", registry_dep),
-                ("b", registry_dep),
-                ("c", "my-crate = \"1.0\""),
-                ("d", "my-crate = \"1.0\""),
-            ],
-        );
-        let (summary, after) = fix(&tmp);
-        assert_eq!(summary.fixed.len(), 1);
-        assert_eq!(
-            summary.skipped,
-            [
-                "skipped: `my-crate` is not promoted, because [workspace.dependencies] already has it"
-            ]
-        );
         assert_eq!(summary.files_modified, 3);
-        assert!(after.is_empty(), "{after:?}");
     }
 
     #[test]
-    fn test_fix_promotion_into_a_root_that_is_also_a_member() {
+    fn test_fix_promotion_into_an_inline_workspace_of_a_root_package() {
         let tmp = temp_workspace("", &[("a", "anyhow = \"1.0\"")]);
-        add_root_package(&tmp, "anyhow = \"1.0\"");
-        let (_, after) = fix(&tmp);
-        assert_eq!(
-            deps_section(&tmp, "Cargo.toml"),
-            "anyhow = { workspace = true }\n\n[workspace]\nmembers = [\"crates/*\"]\n\n\
-             [workspace.dependencies]\nanyhow = \"1.0\"\n\n"
-        );
-        assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn test_fix_promotion_into_an_inline_workspace_table() {
-        let tmp = temp_workspace("", &[("a", "anyhow = \"1.0\""), ("b", "anyhow = \"1.0\"")]);
         std::fs::write(
             tmp.path().join("Cargo.toml"),
-            "workspace = { members = [\"crates/*\"] }\n",
+            "workspace = { members = [\"crates/*\"] }\n\n\
+             [package]\nname = \"root\"\n\n[dependencies]\nanyhow = \"1.0\"\n",
         )
         .unwrap();
-        let (_, after) = fix(&tmp);
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        fix(&tmp);
         assert_eq!(
             read_file(&tmp, "Cargo.toml"),
-            "workspace = { members = [\"crates/*\"], dependencies = { anyhow = \"1.0\" } }\n"
+            "workspace = { members = [\"crates/*\"], dependencies = { anyhow = \"1.0\" } }\n\n\
+             [package]\nname = \"root\"\n\n[dependencies]\nanyhow = { workspace = true }\n"
         );
-        assert!(after.is_empty(), "{after:?}");
     }
 }

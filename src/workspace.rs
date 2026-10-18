@@ -377,11 +377,7 @@ mod tests {
     #[test]
     fn test_no_workspace_section() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         let err = parse_workspace(dir.path()).unwrap_err();
         assert!(err.starts_with("No [workspace] section in "), "{err}");
     }
