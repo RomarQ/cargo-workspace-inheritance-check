@@ -104,3 +104,18 @@ fn test_problems_left_by_fix_fail_unless_no_fail() {
     assert!(stdout.ends_with("1 error, 0 warnings found\n"), "{stdout}");
     assert!(run(tmp.path(), &["--fix", "--no-fail"]).status.success());
 }
+
+#[test]
+fn test_missing_cargo_says_how_to_provide_it() {
+    let output = Command::new(BIN)
+        .args(["--path", "tests/fixtures/valid_workspace"])
+        .env(
+            "CARGO",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("no-such-cargo"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("put it on PATH, or set CARGO"), "{stderr}");
+}

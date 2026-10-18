@@ -2,6 +2,7 @@
 //! dependency entries that each member declares.
 
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
@@ -232,12 +233,20 @@ struct MetadataPackage {
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
-    let output = Command::new(cargo)
+    let output = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--offline", "--color", "never"])
         .args(["--format-version", "1", "--manifest-path", "Cargo.toml"])
         .current_dir(root)
         .output()
-        .map_err(|e| format!("Failed to run cargo metadata: {e}"))?;
+        .map_err(|e| {
+            let cargo = cargo.to_string_lossy();
+            let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
+            if e.kind() == ErrorKind::NotFound {
+                message
+                    .push_str(". The tool needs cargo: put it on PATH, or set CARGO to its path");
+            }
+            message
+        })?;
     if !output.status.success() {
         return Err(format!(
             "cargo metadata failed for {}:\n{}",
