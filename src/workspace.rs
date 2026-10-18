@@ -24,9 +24,9 @@ pub struct WorkspaceInfo {
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
 ///
 /// `dependency` matches the dependency key or the package name. `member` is a path from the
-/// workspace root, and can use `..` for a member outside it. It is a crate directory (e.g.
-/// `crates/bar`), which also covers the crates below it, or a manifest path (e.g. `Cargo.toml`
-/// for the root package). `.` and `None` cover every member, also one outside the root.
+/// workspace root, and can use `..` for a member outside it. It is a directory (e.g.
+/// `crates/bar`), which covers the crates below it, or a manifest path (e.g. `Cargo.toml` for the
+/// root package). `.` and `None` cover every member, also one outside the root.
 struct IgnoreRule {
     dependency: String,
     member: Option<String>,

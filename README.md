@@ -138,7 +138,7 @@ ignore = [
 
 Ignored dependencies are skipped in both reporting and fixing.
 
-`dependency` matches the dependency key or the package name. `member` is a path from the workspace root, and can use `..` for a crate outside the root, such as `member = "../shared"`. It is a crate directory, which also covers the crates below that directory, or a manifest path. So `member = "."` covers every crate, and `member = "Cargo.toml"` covers only the root package. The `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables form works too. An invalid rule, such as one without a string `dependency` or with an unknown key, is an error.
+`dependency` matches the dependency key or the package name. `member` is a path from the workspace root, and can use `..` for a crate outside the root, such as `member = "../shared"`. It is a directory, which covers the crates below it, or a manifest path. So `member = "."` covers every crate, and `member = "Cargo.toml"` covers only the root package. The `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables form works too. An invalid rule, such as one without a string `dependency`, with an unknown key, or with an empty `member`, is an error.
 
 ## JSON Output
 
