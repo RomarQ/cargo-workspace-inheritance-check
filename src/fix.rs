@@ -39,19 +39,25 @@ pub(crate) struct Promotion {
 impl Promotion {
     /// The value written to `[workspace.dependencies]`.
     pub fn value(&self) -> Value {
-        if self.default_features && self.registry.is_none() {
-            return self.version.as_str().into();
-        }
-        let mut table = InlineTable::new();
-        table.insert("version", self.version.as_str().into());
-        if !self.default_features {
-            table.insert("default-features", false.into());
-        }
-        if let Some(registry) = &self.registry {
-            table.insert("registry", registry.as_str().into());
-        }
-        Value::InlineTable(table)
+        let registry = self.registry.as_deref();
+        dep_value(&self.version, registry, self.default_features)
     }
+}
+
+/// A `[workspace.dependencies]` value: the bare version, or an inline table with the other keys.
+pub(crate) fn dep_value(version: &str, registry: Option<&str>, default_features: bool) -> Value {
+    if default_features && registry.is_none() {
+        return version.into();
+    }
+    let mut table = InlineTable::new();
+    table.insert("version", version.into());
+    if !default_features {
+        table.insert("default-features", false.into());
+    }
+    if let Some(registry) = registry {
+        table.insert("registry", registry.into());
+    }
+    Value::InlineTable(table)
 }
 
 /// Rewrites one member entry to `{ workspace = true }`.
@@ -66,13 +72,12 @@ pub(crate) struct Edit {
 }
 
 /// What [`apply_fixes`] did.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FixSummary {
     /// A `fixed:` line for each finding that was fixed.
     pub fixed: Vec<String>,
     /// A `skipped:` line with the reason for each finding that was left as it is.
     pub skipped: Vec<String>,
-    /// The number of manifests written.
     pub files_modified: usize,
 }
 
@@ -87,8 +92,7 @@ pub struct FixSummary {
 /// Returns an error when a manifest cannot be read, parsed, or written, or when it no longer
 /// has an entry that a fix names. Files written before the error keep their changes.
 pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
-    let mut fixed = Vec::new();
-    let mut skipped = Vec::new();
+    let mut summary = FixSummary::default();
     let mut root: Option<(&Path, DocumentMut)> = None;
     let mut root_changed = false;
     let mut edits: BTreeMap<&Path, Vec<&Edit>> = BTreeMap::new();
@@ -97,18 +101,18 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
         let fix = match &finding.fix {
             Ok(fix) => fix,
             Err(reason) => {
-                skipped.push(format!("skipped: {reason}"));
+                summary.skipped.push(format!("skipped: {reason}"));
                 continue;
             }
         };
         if let Some(promotion) = &fix.promotion {
-            if root.is_none() {
-                let path = promotion.root_manifest.as_path();
-                root = Some((path, read_manifest(path)?));
-            }
-            let (_, doc) = root.as_mut().expect("the root manifest is read above");
+            let path = promotion.root_manifest.as_path();
+            let (_, doc) = match &mut root {
+                Some(loaded) => loaded,
+                None => root.insert((path, read_manifest(path)?)),
+            };
             if !insert_workspace_dep(doc, promotion)? {
-                skipped.push(format!(
+                summary.skipped.push(format!(
                     "skipped: `{}` is not promoted, because [workspace.dependencies] already has it",
                     promotion.key,
                 ));
@@ -119,7 +123,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
         for edit in &fix.edits {
             edits.entry(edit.manifest.as_path()).or_default().push(edit);
         }
-        fixed.push(format!("fixed: {}", fix.description));
+        summary.fixed.push(format!("fixed: {}", fix.description));
     }
 
     let mut modified_files = BTreeSet::new();
@@ -147,12 +151,8 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
         write_manifest(manifest, &doc)?;
         modified_files.insert(manifest);
     }
-
-    Ok(FixSummary {
-        fixed,
-        skipped,
-        files_modified: modified_files.len(),
-    })
+    summary.files_modified = modified_files.len();
+    Ok(summary)
 }
 
 /// Rewrite the entry `key` of `table` to `{ workspace = true }`, and keep only the keys that

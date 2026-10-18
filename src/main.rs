@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use cargo_workspace_inheritance_check::check::{self, Finding};
 use cargo_workspace_inheritance_check::diagnostic::{DiagnosticKind, DiagnosticReport, Severity};
-use cargo_workspace_inheritance_check::fix::{self, FixSummary};
+use cargo_workspace_inheritance_check::fix;
 use cargo_workspace_inheritance_check::workspace;
 use clap::builder::RangedU64ValueParser;
 use clap::{Parser, ValueEnum};
@@ -46,20 +46,16 @@ struct Cli {
     #[arg(long)]
     fix: bool,
 
-    // Support `cargo workspace-inheritance-check` invocation where cargo
-    // passes the subcommand name as the first argument.
+    // `cargo workspace-inheritance-check` passes the subcommand name as the first argument.
     #[arg(hide = true, value_parser = ["workspace-inheritance-check"])]
     _subcommand: Option<String>,
 }
 
 fn main() -> ExitCode {
-    match run(&Cli::parse()) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    run(&Cli::parse()).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, String> {
@@ -68,7 +64,16 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
     if cli.fix {
         let summary =
             fix::apply_fixes(&findings).map_err(|e| format!("failed to apply fixes: {e}"))?;
-        print_fix_summary(&summary);
+        for line in summary.fixed.iter().chain(&summary.skipped) {
+            eprintln!("{line}");
+        }
+        match summary.fixed.len() {
+            0 => eprintln!("no fixable issues found"),
+            n => eprintln!(
+                "\n{n} fix(es) applied across {} file(s)",
+                summary.files_modified
+            ),
+        }
         // The report and the exit code cover the problems that the fixes left.
         findings = check(cli)?;
     }
@@ -86,32 +91,14 @@ fn run(cli: &Cli) -> Result<ExitCode, String> {
     })
 }
 
-/// Parse the workspace and run the checks. With `--promotion-failure`, promotion candidates
-/// are errors.
+/// Run the checks. With `--promotion-failure`, promotion candidates are errors.
 fn check(cli: &Cli) -> Result<Vec<Finding>, String> {
     let workspace = workspace::parse_workspace(&cli.path)?;
     let mut findings = check::run_checks(&workspace, cli.promotion_threshold);
-    if cli.promotion_failure {
-        for d in findings.iter_mut().map(|f| &mut f.diagnostic) {
-            if matches!(d.kind, DiagnosticKind::PromotionCandidate { .. }) {
-                d.severity = Severity::Error;
-            }
+    for d in findings.iter_mut().map(|f| &mut f.diagnostic) {
+        if cli.promotion_failure && matches!(d.kind, DiagnosticKind::PromotionCandidate { .. }) {
+            d.severity = Severity::Error;
         }
     }
     Ok(findings)
-}
-
-fn print_fix_summary(summary: &FixSummary) {
-    for line in summary.fixed.iter().chain(&summary.skipped) {
-        eprintln!("{line}");
-    }
-    if summary.fixed.is_empty() {
-        eprintln!("no fixable issues found");
-    } else {
-        eprintln!(
-            "\n{} fix(es) applied across {} file(s)",
-            summary.fixed.len(),
-            summary.files_modified,
-        );
-    }
 }

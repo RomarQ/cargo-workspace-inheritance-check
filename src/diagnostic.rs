@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::fix::dep_value;
+
 /// How serious a [`Diagnostic`] is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -70,40 +72,27 @@ impl std::fmt::Display for Severity {
     }
 }
 
-/// The plural suffix for `count` items.
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
-}
-
-/// Format a dependency value for display, e.g. `"1.0"` or `{ version = "1.0", registry = "r" }`.
-fn format_dep_value(version: &str, registry: Option<&str>) -> String {
-    if let Some(reg) = registry {
-        format!("{{ version = \"{version}\", registry = \"{reg}\" }}")
-    } else {
-        format!("\"{version}\"")
-    }
 }
 
 impl Diagnostic {
     /// The diagnostic as text for a terminal. A promotion candidate takes several lines.
     pub fn format_human(&self) -> String {
-        match &self.kind {
+        let dep = &self.dependency;
+        let message = match &self.kind {
             DiagnosticKind::NotInherited {
                 version, member, ..
-            } => {
-                let ver = version.as_deref().unwrap_or("?");
-                format!(
-                    "error: `{dep} = \"{ver}\"` in {member} should use `{dep} = {{ workspace = true }}`",
-                    dep = self.dependency,
-                )
-            }
+            } => format!(
+                "`{dep} = \"{}\"` in {member} should use `{dep} = {{ workspace = true }}`",
+                version.as_deref().unwrap_or("?"),
+            ),
             DiagnosticKind::VersionMismatch {
                 version,
                 member,
                 workspace_version,
             } => format!(
-                "error: `{dep} = \"{version}\"` in {member} has a different version than workspace `{dep} = \"{workspace_version}\"`",
-                dep = self.dependency,
+                "`{dep} = \"{version}\"` in {member} has a different version than workspace `{dep} = \"{workspace_version}\"`",
             ),
             DiagnosticKind::PromotionCandidate {
                 count,
@@ -112,24 +101,20 @@ impl Diagnostic {
                 suggested_registry,
             } => {
                 let mut lines = vec![format!(
-                    "{}: `{}` appears in {count} crate{} but is not in [workspace.dependencies]",
-                    self.severity,
-                    self.dependency,
+                    "`{dep}` appears in {count} crate{} but is not in [workspace.dependencies]",
                     plural(*count),
                 )];
-                for m in members {
-                    lines.push(format!("  --> {m}"));
-                }
-                if let Some(ver) = suggested_version {
-                    let value = format_dep_value(ver, suggested_registry.as_deref());
+                lines.extend(members.iter().map(|m| format!("  --> {m}")));
+                if let Some(version) = suggested_version {
+                    let value = dep_value(version, suggested_registry.as_deref(), true);
                     lines.push(format!(
-                        "  hint: consider adding `{} = {}` to [workspace.dependencies]",
-                        self.dependency, value,
+                        "  hint: consider adding `{dep} = {value}` to [workspace.dependencies]"
                     ));
                 }
                 lines.join("\n")
             }
-        }
+        };
+        format!("{}: {message}", self.severity)
     }
 }
 
@@ -165,17 +150,14 @@ impl DiagnosticReport {
 
     /// Each diagnostic as text for a terminal, then a summary line.
     pub fn format_human(&self) -> String {
-        let mut parts: Vec<String> = self
-            .diagnostics
-            .iter()
-            .map(Diagnostic::format_human)
-            .collect();
         let Summary { errors, warnings } = self.summary;
-        parts.push(format!(
+        let summary = format!(
             "{errors} error{}, {warnings} warning{} found",
             plural(errors),
             plural(warnings),
-        ));
+        );
+        let diagnostics = self.diagnostics.iter().map(Diagnostic::format_human);
+        let parts: Vec<String> = diagnostics.chain([summary]).collect();
         parts.join("\n\n")
     }
 
