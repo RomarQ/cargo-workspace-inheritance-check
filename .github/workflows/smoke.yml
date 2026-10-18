@@ -32,12 +32,6 @@ jobs:
         with:
           path: tests/fixtures/version_mismatch
 
-      - name: Check that the failing steps failed
-        if: steps.not-inherited.outcome != 'failure' || steps.version-mismatch.outcome != 'failure'
-        run: |
-          echo "The not-inherited and version-mismatch steps must fail."
-          exit 1
-
       - name: Promotion candidate (should warn)
         uses: ./
         with:
@@ -49,3 +43,46 @@ jobs:
           path: tests/fixtures/not_inherited
           format: json
           no-fail: true
+
+      - name: Invalid format (should fail)
+        id: invalid-format
+        continue-on-error: true
+        uses: ./
+        with:
+          path: tests/fixtures/valid_workspace
+          format: yaml
+
+      - name: Promotion failure (should fail)
+        id: promotion-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          path: tests/fixtures/promotion_candidate
+          promotion-failure: true
+
+      - name: Promotion failure, threshold 3 (should pass)
+        uses: ./
+        with:
+          path: tests/fixtures/promotion_candidate
+          promotion-failure: true
+          promotion-threshold: 3
+
+      - name: Check that the failing steps failed
+        if: >-
+          steps.not-inherited.outcome != 'failure' ||
+          steps.version-mismatch.outcome != 'failure' ||
+          steps.invalid-format.outcome != 'failure' ||
+          steps.promotion-failure.outcome != 'failure'
+        run: |
+          echo "Each step marked (should fail) must fail."
+          exit 1
+
+      # Runs last, because it rewrites tests/fixtures/version_mismatch.
+      - name: Fix
+        uses: ./
+        with:
+          path: tests/fixtures/version_mismatch
+          fix: true
+
+      - name: Check that the fix rewrote the member
+        run: grep -qxF 'rand = { workspace = true }' tests/fixtures/version_mismatch/crates/bar/Cargo.toml
