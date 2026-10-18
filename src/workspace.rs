@@ -24,9 +24,10 @@ pub struct WorkspaceInfo {
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
 ///
 /// `dependency` matches the dependency key or the package name. `member` is a path from the
-/// workspace root, and can use `..` for a member outside it. It is a directory (e.g.
-/// `crates/bar`), which covers the crates below it, or a manifest path (e.g. `Cargo.toml` for the
-/// root package). `.` and `None` cover every member, also one outside the root.
+/// workspace root, and can use `..` for a member outside it. An absolute path works too. It is a
+/// directory (e.g. `crates/bar`), which covers the crates below it, or a manifest path (e.g.
+/// `Cargo.toml` for the root package). `.` and `None` cover every member, also one outside the
+/// root.
 struct IgnoreRule {
     dependency: String,
     member: Option<String>,
@@ -175,8 +176,8 @@ pub(crate) fn dep_table_mut<'a>(
 /// Parse the workspace whose root manifest is `path/Cargo.toml`.
 ///
 /// Cargo decides the member set: this runs `cargo metadata --no-deps` in `path`, with the
-/// cargo from the `CARGO` environment variable that cargo sets for subcommands, or else the
-/// `cargo` on `PATH`.
+/// cargo from the `CARGO` environment variable that cargo sets for subcommands when it is not
+/// empty, or else the `cargo` on `PATH`.
 ///
 /// # Errors
 ///
@@ -245,8 +246,8 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
             let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
             if e.kind() == ErrorKind::NotFound {
                 message.push_str(
-                    ". The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo \
-                     on PATH",
+                    ". The tool needs cargo: set CARGO to its absolute path, or unset CARGO and \
+                     put cargo on PATH",
                 );
             }
             message
@@ -280,14 +281,15 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
     };
     rules.ok_or_else(|| {
         "Invalid `ignore` in [workspace.metadata.inheritance-check]: expected an array of \
-         `{ dependency = \"...\", member = \"...\" }` entries, where `member` is optional"
+         `{ dependency = \"...\", member = \"...\" }` entries, where `member` is optional and \
+         not empty"
             .to_string()
     })
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
-    // An unknown key, such as a misspelled `member`, a value that is not a string, or an empty
-    // `member` makes the rule invalid, so a mistake never widens it to every crate.
+    // An unknown key, a value that is not a string, or an empty `member` makes the rule invalid.
+    // So a mistake, such as a misspelled `member`, never widens the rule to every crate.
     if !table
         .iter()
         .all(|(key, value)| matches!(key, "dependency" | "member") && value.is_str())

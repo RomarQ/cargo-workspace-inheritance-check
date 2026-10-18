@@ -116,11 +116,22 @@ fn test_missing_cargo_says_how_to_provide_it() {
         assert!(!output.status.success());
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
-    let hint = "The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo on PATH";
+    let hint = "The tool needs cargo: set CARGO to its absolute path, or unset CARGO and put cargo on PATH";
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let stderr = with_cargo(&root.join("no-such-cargo"));
     assert!(stderr.contains(hint), "{stderr}");
     // A directory exists but cannot run: the hint is only for a missing cargo.
     let stderr = with_cargo(root);
     assert!(!stderr.contains(hint), "{stderr}");
+}
+
+#[test]
+fn test_empty_cargo_uses_cargo_on_path() {
+    let output = Command::new(BIN)
+        .args(["--path", "tests/fixtures/valid_workspace"])
+        .env("CARGO", "")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
 }
