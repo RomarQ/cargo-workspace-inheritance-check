@@ -286,17 +286,21 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
-    // An unknown key, such as a misspelled `member`, or a value that is not a string makes the
-    // rule invalid, so a mistake never widens it to every crate.
+    // An unknown key, such as a misspelled `member`, a value that is not a string, or an empty
+    // `member` makes the rule invalid, so a mistake never widens it to every crate.
     if !table
         .iter()
         .all(|(key, value)| matches!(key, "dependency" | "member") && value.is_str())
     {
         return None;
     }
+    let member = str_field(table, "member");
+    if member.as_deref() == Some("") {
+        return None;
+    }
     Some(IgnoreRule {
         dependency: str_field(table, "dependency")?,
-        member: str_field(table, "member"),
+        member,
     })
 }
 
@@ -429,7 +433,11 @@ mod tests {
 
     #[test]
     fn test_invalid_ignore_rule_is_an_error() {
-        for name in ["ignore_member_not_a_string", "ignore_unknown_key"] {
+        for name in [
+            "ignore_member_not_a_string",
+            "ignore_member_empty",
+            "ignore_unknown_key",
+        ] {
             let err = parse_workspace(&fixture(name)).unwrap_err();
             assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
         }
