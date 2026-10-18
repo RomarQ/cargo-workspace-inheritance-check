@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/a", "../outside", "../../far"]
+
+[workspace.dependencies]
+itoa = "1.0"
+log = "0.4"
+rand = "0.8"
+serde = "1.0"
+
+[workspace.metadata.inheritance-check]
+ignore = [
+  { dependency = "rand", member = "../outside" },
+  { dependency = "log", member = ".." },
+  { dependency = "itoa", member = "." },
+]

@@ -22,28 +22,25 @@ pub struct WorkspaceInfo {
 
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
 ///
-/// `dependency` matches the dependency key or the package name. `member` is relative to the
-/// workspace root. It is a crate directory (e.g. `crates/bar`), which also covers the crates
-/// below it, or a manifest path (e.g. `Cargo.toml` for the root package). `.` and `None` cover
-/// every member.
+/// `dependency` matches the dependency key or the package name. `member` is a path from the
+/// workspace root, and can use `..` for a member outside it. It is a crate directory (e.g.
+/// `crates/bar`), which also covers the crates below it, or a manifest path (e.g. `Cargo.toml`
+/// for the root package). `.` and `None` cover every member, also one outside the root.
 struct IgnoreRule {
     dependency: String,
     member: Option<String>,
 }
 
 impl IgnoreRule {
-    fn matches(&self, dep: &MemberDep) -> bool {
+    fn matches(&self, dep: &MemberDep, root: &Path) -> bool {
         if self.dependency != dep.key && self.dependency != dep.spec.package {
             return false;
         }
-        let scope = self.member.as_deref().unwrap_or(".").replace('\\', "/");
-        let scope = scope.trim_start_matches("./").trim_end_matches('/');
-        if scope.is_empty() || scope == "." {
+        let Some(member) = &self.member else {
             return true;
-        }
-        dep.member
-            .strip_prefix(scope)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        let scope = normalize(&root.join(member.replace('\\', "/")));
+        scope == root || dep.manifest.starts_with(scope)
     }
 }
 
@@ -52,7 +49,8 @@ impl IgnoreRule {
 pub struct MemberDep {
     pub manifest: PathBuf,
     /// The manifest path relative to the workspace root, such as `../outside/Cargo.toml` for a
-    /// member outside it, with `/` separators on every OS.
+    /// member outside it, with `/` separators on every OS. A member on another Windows drive
+    /// keeps its absolute path.
     pub member: String,
     pub table: DepTable,
     pub key: String,
@@ -209,7 +207,8 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     for MetadataPackage { manifest_path } in metadata.packages {
         member_deps.extend(parse_member(&metadata.workspace_root, manifest_path)?);
     }
-    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep)));
+    let root = &metadata.workspace_root;
+    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep, root)));
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,
@@ -336,6 +335,22 @@ fn relative_to(path: &Path, base: &Path) -> PathBuf {
         .collect()
 }
 
+/// Resolve `.` and `..` in `path` without reading the file system, as cargo does for the paths
+/// it reports.
+fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            part => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 /// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
 /// entry with `workspace = true`, and for a value that is neither a string nor a table.
 fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
@@ -408,8 +423,8 @@ mod tests {
     }
 
     #[test]
-    fn test_member_outside_the_root_is_named_and_ignored_from_the_root() {
-        let ws = parse_workspace(&fixture("outside_member/ws")).unwrap();
+    fn test_members_outside_the_root_are_named_and_ignored_from_the_root() {
+        let ws = parse_workspace(&fixture("outside_member/a/ws")).unwrap();
         let deps: Vec<_> = ws
             .member_deps
             .iter()
@@ -419,7 +434,9 @@ mod tests {
             deps,
             [
                 ("serde", "../outside/Cargo.toml"),
-                ("serde", "crates/a/Cargo.toml")
+                ("serde", "crates/a/Cargo.toml"),
+                ("log", "../../far/Cargo.toml"),
+                ("serde", "../../far/Cargo.toml"),
             ]
         );
     }

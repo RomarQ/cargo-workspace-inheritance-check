@@ -1,9 +1,0 @@
-[workspace]
-members = ["crates/a", "../outside"]
-
-[workspace.dependencies]
-rand = "0.8"
-serde = "1.0"
-
-[workspace.metadata.inheritance-check]
-ignore = [{ dependency = "rand", member = "../outside" }]
