@@ -7,10 +7,11 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
-- A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, `registry-index`, path, or git). A path or git entry must also name the same `registry` or `registry-index`. For a renamed entry, the JSON `dependency` value is the key.
+- The binary needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`.
+- A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, `registry-index`, path, or git). A path or git entry must also name the same `registry` or `registry-index`. `registry = "crates-io"` is crates.io. For a renamed entry, the JSON `dependency` value is the key.
 - Renamed, `registry-index`, path, and git dependencies are not promotion candidates. A promotion counts each crate once, and it gives no suggested version when two versions tie.
 - `--fix` checks the workspace again after the fixes, prints that report in the selected `--format`, and exits 1 when errors remain, unless `--no-fail` is set.
-- An invalid ignore rule, including one with an unknown key, is an error. A rule's `dependency` matches the key or the package name. `member` accepts a leading `./`, `.` covers every crate, and a manifest path such as `Cargo.toml` covers only that crate.
+- An invalid ignore rule, including one with an unknown key, is an error. A rule's `dependency` matches the key or the package name. `member` accepts a leading `./`, `.` covers every crate, and a manifest path such as `Cargo.toml` covers only that crate. `member` is a path from the workspace root, so `..` covers the crates below the parent directory of the root.
 - `--promotion-threshold 0` is rejected.
 - toml_edit 0.25 reads TOML 1.1 manifests. The minimum supported Rust version is 1.88.
 
@@ -23,7 +24,7 @@ All notable changes to this project will be documented in this file.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
 - `--path ./x` gives member paths relative to the workspace root.
 - The promotion warning for one crate says `appears in 1 crate`.
-- The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. It installs with `--locked`.
+- The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. Each input is one argument, so an input can no longer add other flags. It installs with `--locked`.
 
 ### Added
 
