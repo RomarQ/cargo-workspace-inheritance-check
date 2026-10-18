@@ -1,0 +1,9 @@
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.9"
+itertools = "0.10"
+my-crate = { version = "1.0", registry = "my-registry" }

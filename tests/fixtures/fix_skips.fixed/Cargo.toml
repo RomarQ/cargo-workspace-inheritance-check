@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = "1.0"
+core = { path = "crates/core" }
+my-crate = "1.0"

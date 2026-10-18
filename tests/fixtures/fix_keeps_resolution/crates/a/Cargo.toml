@@ -1,0 +1,16 @@
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"], optional = true }
+tokio = "1"
+ed25519-dalek = { version = "2.1", default-features = false }
+my-crate = { version = "1.0", registry = "my-registry" }
+
+[dev-dependencies.rand]
+version = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3"

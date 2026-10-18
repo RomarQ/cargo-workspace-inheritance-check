@@ -1,205 +1,106 @@
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Output};
 
-fn cargo_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cargo-workspace-inheritance-check"))
+const BIN: &str = env!("CARGO_BIN_EXE_cargo-workspace-inheritance-check");
+
+/// Run the binary as `cargo workspace-inheritance-check` does, with the subcommand name first.
+fn run(root: &Path, args: &[&str]) -> Output {
+    Command::new(BIN)
+        .arg("workspace-inheritance-check")
+        .arg("--path")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap()
 }
 
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name)
+/// A copy of the fixture workspace `name`, because `--fix` writes to it.
+fn fixture_copy(name: &str) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    copy(&Path::new("tests/fixtures").join(name), tmp.path());
+    tmp
+}
+
+/// The workspace as cargo reads it.
+fn cargo_metadata(root: &Path) -> serde_json::Value {
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--no-deps", "--offline"])
+        .args(["--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
-fn test_clean_workspace_exits_zero() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("valid_workspace").to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-}
-
-#[test]
-fn test_not_inherited_exits_one() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("not_inherited").to_str().unwrap()])
-        .output()
-        .unwrap();
+fn test_promotion_candidates_fail_only_with_promotion_failure() {
+    let root = Path::new("tests/fixtures/promotion_candidate");
+    assert!(run(root, &[]).status.success());
+    let output = run(root, &["--promotion-failure"]);
     assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("error:"));
-    assert!(stdout.contains("serde"));
-    assert!(stdout.contains("workspace = true"));
-}
-
-#[test]
-fn test_version_mismatch_exits_one() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("version_mismatch").to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("error:"));
-    assert!(stdout.contains("rand"));
-    assert!(stdout.contains("0.7"));
-    assert!(stdout.contains("0.8"));
-}
-
-#[test]
-fn test_promotion_candidate_warning() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("promotion_candidate").to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "warnings alone should not cause failure"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("warning:"));
-    assert!(stdout.contains("serde_yaml"));
-}
-
-#[test]
-fn test_promotion_failure_flag() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("promotion_candidate").to_str().unwrap(),
-            "--promotion-failure",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "--promotion-failure should cause exit 1"
-    );
-}
-
-#[test]
-fn test_no_fail_flag() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("not_inherited").to_str().unwrap(),
-            "--no-fail",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "--no-fail should always exit 0");
-}
-
-#[test]
-fn test_json_format() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("not_inherited").to_str().unwrap(),
-            "--format",
-            "json",
-            "--no-fail",
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed["diagnostics"].is_array());
-    assert_eq!(parsed["diagnostics"][0]["check"], "not-inherited");
-    assert!(parsed["summary"]["errors"].as_u64().unwrap() > 0);
-}
-
-#[test]
-fn test_promotion_threshold() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("promotion_candidate").to_str().unwrap(),
-            "--promotion-threshold",
-            "3",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("serde_yaml"),
-        "threshold 3 should not flag serde_yaml in 2 crates"
-    );
-}
-
-#[test]
-fn test_registry_mismatch_not_flagged() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("registry_mismatch").to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "dep from different registry should not match workspace dep"
-    );
-}
-
-#[test]
-fn test_same_registry_not_inherited() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("registry_not_inherited").to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("error:"));
-    assert!(stdout.contains("my-crate"));
-    assert!(stdout.contains("workspace = true"));
-}
-
-#[test]
-fn test_registry_promotion_candidate() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("registry_promotion").to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "promotion is a warning, not error");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("warning:"));
-    assert!(stdout.contains("my-crate"));
-    assert!(stdout.contains("registry = \"my-registry\""));
-}
-
-#[test]
-fn test_registry_promotion_json() {
-    let output = Command::new(cargo_bin())
-        .args([
-            "--path",
-            fixture("registry_promotion").to_str().unwrap(),
-            "--format",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed["diagnostics"][0]["check"], "promotion-candidate");
     assert_eq!(
-        parsed["diagnostics"][0]["suggested_registry"],
-        "my-registry"
+        String::from_utf8_lossy(&output.stdout),
+        "error: `serde_yaml` appears in 2 crates but is not in [workspace.dependencies]\n  \
+         --> crates/one/Cargo.toml\n  \
+         --> crates/two/Cargo.toml\n  \
+         hint: consider adding `serde_yaml = \"0.9\"` to [workspace.dependencies]\n\n\
+         1 error, 0 warnings found\n"
     );
+    let higher_threshold = ["--promotion-failure", "--promotion-threshold", "3"];
+    assert!(run(root, &higher_threshold).status.success());
 }
 
 #[test]
-fn test_different_registries_no_promotion() {
-    let output = Command::new(cargo_bin())
-        .args(["--path", fixture("registry_different").to_str().unwrap()])
+fn test_version_mismatch_json_names_the_member_relative_to_the_workspace_root() {
+    // Run the binary on its own, without the subcommand name. The relative `--path` catches a
+    // member path made from `--path` instead of the workspace root.
+    let output = Command::new(BIN)
+        .current_dir("tests/fixtures")
+        .args(["--path", "./version_mismatch", "--format", "json"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostic = &parsed["diagnostics"][0];
+    assert_eq!(diagnostic["check"], "version-mismatch");
+    assert_eq!(diagnostic["version"], "0.7");
+    assert_eq!(diagnostic["workspace_version"], "0.8");
+    assert_eq!(diagnostic["member"], "crates/bar/Cargo.toml");
+}
+
+#[test]
+fn test_fix_keeps_what_cargo_resolves() {
+    let tmp = fixture_copy("fix_keeps_resolution");
+    let before = cargo_metadata(tmp.path());
+    let output = run(tmp.path(), &["--fix"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("6 fix(es) applied"), "{stderr}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("my-crate"),
-        "deps from different registries should not be grouped"
-    );
+    assert_eq!(stdout, "0 errors, 0 warnings found\n");
+    assert_eq!(cargo_metadata(tmp.path()), before);
+}
+
+#[test]
+fn test_problems_left_by_fix_fail_unless_no_fail() {
+    let tmp = fixture_copy("fix_leaves_problems");
+    let output = run(tmp.path(), &["--fix"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("skipped: `serde`"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.ends_with("1 error, 0 warnings found\n"), "{stdout}");
+    assert!(run(tmp.path(), &["--fix", "--no-fail"]).status.success());
 }

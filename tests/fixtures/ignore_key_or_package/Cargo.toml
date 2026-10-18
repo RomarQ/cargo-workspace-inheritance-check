@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde1 = { package = "serde", version = "1.0" }
+md5 = { package = "md-5", version = "0.10" }
+
+[[workspace.metadata.inheritance-check.ignore]]
+dependency = "serde"
+
+[[workspace.metadata.inheritance-check.ignore]]
+dependency = "md5"

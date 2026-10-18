@@ -1,0 +1,5 @@
+# No targets, so cargo cannot load this package: the [workspace] check must come first.
+[package]
+name = "x"
+version = "0.1.0"
+edition = "2021"

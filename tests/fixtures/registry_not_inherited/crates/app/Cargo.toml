@@ -1,7 +1,0 @@
-[package]
-name = "app"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-my-crate = { version = "1.0", registry = "my-registry" }

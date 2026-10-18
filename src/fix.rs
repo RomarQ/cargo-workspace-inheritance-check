@@ -1,591 +1,258 @@
+//! Writes the fixes that [`crate::check::run_checks`] plans.
+
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use toml_edit::{DocumentMut, InlineTable, Item, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
 
-use crate::diagnostic::{Diagnostic, DiagnosticKind, format_dep_value};
-use crate::workspace::{
-    for_each_dep_table, for_each_dep_table_mut, item_as_table_like, read_manifest, write_manifest,
-};
+use crate::check::Finding;
+use crate::workspace::{MemberDep, dep_table_mut, read_manifest, write_manifest};
 
-/// Keys that are owned by the workspace dep and must be stripped from members.
-const STRIPPED_KEYS: &[&str] = &["version", "default-features", "registry"];
+/// Keys that cargo reads on an entry with `workspace = true`. It ignores any other key with an
+/// "unused manifest key" warning, and `default-features` has its own rule in [`Edit`].
+const INHERITABLE_KEYS: [&str; 3] = ["features", "optional", "public"];
 
+/// The change that `--fix` makes for one finding.
+#[derive(Debug)]
+pub(crate) struct Fix {
+    pub promotion: Option<Promotion>,
+    pub edits: Vec<Edit>,
+    /// What the fix does, for the `fixed:` line.
+    pub description: String,
+}
+
+/// An entry to add to `[workspace.dependencies]`. Every promotion of one run names the same
+/// root manifest.
+#[derive(Debug)]
+pub(crate) struct Promotion {
+    pub root_manifest: PathBuf,
+    pub key: String,
+    pub value: Value,
+}
+
+/// Rewrites one member entry to `{ workspace = true }`.
+#[derive(Debug)]
+pub(crate) struct Edit {
+    pub dep: MemberDep,
+    /// Write `default-features = true`, because the entry uses default features and the
+    /// workspace entry disables them. Otherwise any `default-features` key is removed.
+    pub enable_default_features: bool,
+}
+
+/// What [`apply_fixes`] did.
+#[derive(Debug, Default)]
 pub struct FixSummary {
-    pub fixes_applied: usize,
+    /// A `fixed:` line for each finding that was fixed.
+    pub fixed: Vec<String>,
+    /// A `skipped:` line with the reason for each finding that was left as it is.
+    pub skipped: Vec<String>,
     pub files_modified: usize,
-    pub actions: Vec<String>,
 }
 
-struct Promotion<'a> {
-    dep_name: &'a str,
-    version: &'a str,
-    registry: Option<&'a str>,
-    default_features: bool,
-}
+/// Apply the fix of every finding.
+///
+/// Promotions go into the root manifest first. A promotion whose key the root already has is
+/// skipped, and its members keep their entries. Then each member manifest is read, edited, and
+/// written once.
+///
+/// # Errors
+///
+/// Returns an error when a manifest cannot be read, parsed, or written, or when it no longer
+/// has an entry that a fix names. Files written before the error keep their changes.
+pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
+    let mut summary = FixSummary::default();
+    let mut root: Option<(&PathBuf, DocumentMut)> = None;
+    let mut root_changed = false;
+    let mut edits: BTreeMap<&PathBuf, Vec<&Edit>> = BTreeMap::new();
 
-pub fn apply_fixes(
-    workspace_root: &Path,
-    diagnostics: &[Diagnostic],
-) -> Result<FixSummary, String> {
-    // Collect all work first, then batch file I/O.
-    // member_fixes: path -> list of dep names to rewrite
-    let mut member_fixes: BTreeMap<PathBuf, Vec<&str>> = BTreeMap::new();
-    let mut promotions: Vec<Promotion> = Vec::new();
-    let mut actions = Vec::new();
-    let mut fixes_applied = 0;
-
-    for diag in diagnostics {
-        match &diag.kind {
-            DiagnosticKind::NotInherited { member, .. }
-            | DiagnosticKind::VersionMismatch { member, .. } => {
-                let full_path = workspace_root.join(member);
-                member_fixes
-                    .entry(full_path)
-                    .or_default()
-                    .push(&diag.dependency);
-                fixes_applied += 1;
-                let msg = match &diag.kind {
-                    DiagnosticKind::NotInherited { .. } => format!(
-                        "fixed: `{}` in {} now uses workspace inheritance",
-                        diag.dependency, member,
-                    ),
-                    DiagnosticKind::VersionMismatch {
-                        version,
-                        workspace_version,
-                        ..
-                    } => format!(
-                        "fixed: `{}` in {} changed from {} to {} (workspace version)",
-                        diag.dependency,
-                        member,
-                        version.as_deref().unwrap_or("?"),
-                        workspace_version.as_deref().unwrap_or("?"),
-                    ),
-                    _ => unreachable!(),
-                };
-                actions.push(msg);
+    for finding in findings {
+        let fix = match &finding.fix {
+            Ok(fix) => fix,
+            Err(reason) => {
+                summary.skipped.push(format!("skipped: {reason}"));
+                continue;
             }
-            DiagnosticKind::PromotionCandidate {
-                members,
-                suggested_version,
-                suggested_registry,
-                ..
-            } => {
-                let Some(version) = suggested_version.as_deref() else {
-                    continue;
-                };
-                let default_features = !any_member_disables_default_features(
-                    workspace_root,
-                    members,
-                    &diag.dependency,
-                );
-                promotions.push(Promotion {
-                    dep_name: &diag.dependency,
-                    version,
-                    registry: suggested_registry.as_deref(),
-                    default_features,
-                });
-                for member_path in members {
-                    member_fixes
-                        .entry(workspace_root.join(member_path))
-                        .or_default()
-                        .push(&diag.dependency);
-                }
-                fixes_applied += 1;
-                let member_list = members.join(", ");
-                let dep_value = format_dep_value(version, suggested_registry.as_deref());
-                actions.push(format!(
-                    "fixed: `{dep} = {dep_value}` added to [workspace.dependencies], updated: {member_list}",
-                    dep = diag.dependency,
+        };
+        if let Some(promotion) = &fix.promotion {
+            let path = &promotion.root_manifest;
+            let (_, doc) = match &mut root {
+                Some(loaded) => loaded,
+                None => root.insert((path, read_manifest(path)?)),
+            };
+            if !insert_workspace_dep(doc, promotion)? {
+                summary.skipped.push(format!(
+                    "skipped: `{}` is not promoted, because [workspace.dependencies] already has it",
+                    promotion.key,
+                ));
+                continue;
+            }
+            root_changed = true;
+        }
+        for edit in &fix.edits {
+            edits.entry(&edit.dep.manifest).or_default().push(edit);
+        }
+        summary.fixed.push(format!("fixed: {}", fix.description));
+    }
+
+    let mut modified_files = BTreeSet::new();
+    if let Some((path, doc)) = &root
+        && root_changed
+    {
+        write_manifest(path, doc)?;
+        modified_files.insert(*path);
+    }
+    // The root manifest can also be a member, so it is read again after the promotions.
+    for (manifest, file_edits) in edits {
+        let mut doc = read_manifest(manifest)?;
+        for edit in file_edits {
+            let rewritten = dep_table_mut(&mut doc, &edit.dep.table).is_some_and(|table| {
+                rewrite_dep_entry(table, &edit.dep.key, edit.enable_default_features)
+            });
+            if !rewritten {
+                return Err(format!(
+                    "`{}` in {} changed after the check",
+                    edit.dep.key,
+                    manifest.display(),
                 ));
             }
         }
+        write_manifest(manifest, &doc)?;
+        modified_files.insert(manifest);
     }
-
-    // Apply all promotions to root Cargo.toml in a single read/write.
-    let mut modified_files = BTreeSet::new();
-    if !promotions.is_empty() {
-        let root_toml = workspace_root.join("Cargo.toml");
-        let mut doc = read_manifest(&root_toml)?;
-        for promo in &promotions {
-            insert_workspace_dep(&mut doc, promo)?;
-        }
-        write_manifest(&root_toml, &doc)?;
-        modified_files.insert(root_toml);
-    }
-
-    // Apply all member dep rewrites, one read/write per file.
-    for (manifest_path, dep_names) in &member_fixes {
-        let mut doc = read_manifest(manifest_path)?;
-        let mut modified = false;
-        for_each_dep_table_mut(&mut doc, |table| {
-            for dep_name in dep_names {
-                if let Some(key) = find_dep_key(table, dep_name)
-                    && rewrite_dep_entry(table, &key)
-                {
-                    modified = true;
-                }
-            }
-        });
-        if modified {
-            write_manifest(manifest_path, &doc)?;
-            modified_files.insert(manifest_path.clone());
-        }
-    }
-
-    Ok(FixSummary {
-        fixes_applied,
-        files_modified: modified_files.len(),
-        actions,
-    })
+    summary.files_modified = modified_files.len();
+    Ok(summary)
 }
 
-/// Find the TOML key for a dependency, handling package renames.
-fn find_dep_key(table: &dyn toml_edit::TableLike, dep_name: &str) -> Option<String> {
-    if table.contains_key(dep_name) {
-        return Some(dep_name.to_string());
-    }
-    // Scan for renamed packages: `alias = { package = "dep_name", ... }`
-    for (key, item) in table.iter() {
-        let package_name = item_as_table_like(item)
-            .and_then(|t| t.get("package"))
-            .and_then(|v| v.as_str());
-        if package_name == Some(dep_name) {
-            return Some(key.to_string());
-        }
-    }
-    None
-}
-
-/// Rewrite a dependency entry to use `{ workspace = true }`.
-///
-/// Strips `version`, `default-features`, and `registry` (which must be set at
-/// the workspace level). Preserves other keys like `features` and `optional`.
-fn rewrite_dep_entry(table: &mut dyn toml_edit::TableLike, key: &str) -> bool {
+/// Rewrite the entry `key` of `table` to `{ workspace = true }`, and keep only the keys that
+/// cargo reads on an inherited entry.
+fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_features: bool) -> bool {
     let Some(item) = table.get_mut(key) else {
         return false;
     };
 
-    // Handle dotted-key table style: [dependencies.foo]
-    if let Some(dep_table) = item.as_table_mut() {
-        if dep_table.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
-            return false;
+    // `[dependencies.serde]` form: edit the table in place, so its comments stay.
+    if let Some(dep) = item.as_table_mut() {
+        dep.retain(|k, _| INHERITABLE_KEYS.contains(&k));
+        dep.insert("workspace", toml_edit::value(true));
+        if enable_default_features {
+            dep.insert("default-features", toml_edit::value(true));
         }
-        for k in STRIPPED_KEYS {
-            dep_table.remove(k);
-        }
-        dep_table.insert("workspace", toml_edit::value(true));
         return true;
     }
 
-    // Handle inline styles
-    match item.as_value() {
-        Some(Value::String(_)) => {
-            // `serde = "1.0"` -> `serde = { workspace = true }`
-            let mut inline = InlineTable::new();
-            inline.insert("workspace", Value::from(true));
-            *item = Item::Value(Value::InlineTable(inline));
-            true
-        }
-        Some(Value::InlineTable(existing)) => {
-            if existing.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
-                return false;
+    let Some(value) = item.as_value_mut() else {
+        return false;
+    };
+    let mut inherited = InlineTable::new();
+    inherited.insert("workspace", true.into());
+    if let Some(existing) = value.as_inline_table() {
+        for (k, v) in existing.iter() {
+            if INHERITABLE_KEYS.contains(&k) {
+                inherited.insert(k, v.clone());
             }
-            let mut rebuilt = InlineTable::new();
-            rebuilt.insert("workspace", Value::from(true));
-            for (k, v) in existing.iter() {
-                if k != "workspace" && !STRIPPED_KEYS.contains(&k) {
-                    rebuilt.insert(k, v.clone());
-                }
-            }
-            *item = Item::Value(Value::InlineTable(rebuilt));
-            true
         }
-        _ => false,
     }
+    if enable_default_features {
+        inherited.insert("default-features", true.into());
+    }
+    inherited.fmt();
+    // toml_edit keeps the comment after an entry in the value's decor.
+    *inherited.decor_mut() = value.decor().clone();
+    *value = Value::InlineTable(inherited);
+    true
 }
 
-/// Check if any member usage of a dependency sets `default-features = false`.
-///
-/// Cargo ignores `default-features = false` in members unless the workspace dep
-/// also sets it. In the 2024 edition this mismatch is a hard error. So if any
-/// member needs `default-features = false`, the workspace dep must have it too.
-fn any_member_disables_default_features(
-    workspace_root: &Path,
-    members: &[String],
-    dep_name: &str,
-) -> bool {
-    for member_path in members {
-        let full_path = workspace_root.join(member_path);
-        let Ok(doc) = read_manifest(&full_path) else {
-            continue;
-        };
-
-        let mut found = false;
-        for_each_dep_table(&doc, |table| {
-            if has_default_features_false(table, dep_name) {
-                found = true;
-            }
-        });
-        if found {
-            return true;
-        }
+/// Insert `promotion` into the root document. Returns `false` when the key already exists.
+fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<bool, String> {
+    let no_workspace = "No [workspace] section in the root Cargo.toml";
+    let workspace = doc.get_mut("workspace").ok_or(no_workspace)?;
+    let inline_workspace = workspace.is_inline_table();
+    // An inline `workspace = { .. }` can hold only inline values.
+    let empty = if inline_workspace {
+        Item::Value(InlineTable::new().into())
+    } else {
+        toml_edit::table()
+    };
+    let workspace = workspace.as_table_like_mut().ok_or(no_workspace)?;
+    let deps = workspace.entry("dependencies").or_insert(empty);
+    let inline_deps = deps.is_inline_table();
+    let entries = deps
+        .as_table_like_mut()
+        .ok_or("[workspace.dependencies] is not a table")?;
+    if entries.contains_key(&promotion.key) {
+        return Ok(false);
     }
-
-    false
-}
-
-fn has_default_features_false(table: &dyn toml_edit::TableLike, dep_name: &str) -> bool {
-    find_dep_key(table, dep_name)
-        .and_then(|key| table.get(&key))
-        .and_then(item_as_table_like)
-        .and_then(|t| t.get("default-features"))
-        .and_then(|v| v.as_bool())
-        == Some(false)
-}
-
-/// Insert a promoted dependency into the in-memory root document.
-fn insert_workspace_dep(doc: &mut DocumentMut, promo: &Promotion) -> Result<(), String> {
-    let workspace = doc
-        .get_mut("workspace")
-        .and_then(|v| v.as_table_mut())
-        .ok_or("No [workspace] in root Cargo.toml")?;
-
-    if !workspace.contains_key("dependencies") {
-        workspace.insert("dependencies", toml_edit::table());
+    entries.insert(&promotion.key, Item::Value(promotion.value.clone()));
+    // An inline table keeps the spacing of its old last value, so respace it. A standard table
+    // is left alone, because its `fmt` also drops comments.
+    if inline_deps {
+        entries.fmt();
     }
-
-    let ws_deps = workspace
-        .get_mut("dependencies")
-        .and_then(|v| v.as_table_mut())
-        .ok_or("Failed to access [workspace.dependencies]")?;
-
-    if !ws_deps.contains_key(promo.dep_name) {
-        if promo.default_features && promo.registry.is_none() {
-            ws_deps.insert(promo.dep_name, toml_edit::value(promo.version));
-        } else {
-            let mut table = InlineTable::new();
-            table.insert("version", Value::from(promo.version));
-            if !promo.default_features {
-                table.insert("default-features", Value::from(false));
-            }
-            if let Some(reg) = promo.registry {
-                table.insert("registry", Value::from(reg));
-            }
-            ws_deps.insert(promo.dep_name, Item::Value(Value::InlineTable(table)));
-        }
+    if inline_workspace {
+        workspace.fmt();
     }
-
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check;
+    use crate::check::run_checks;
+    use crate::fixtures::{assert_fixed, fixture_copy};
     use crate::workspace::parse_workspace;
 
-    fn copy_fixture(name: &str) -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().unwrap();
-        copy_dir_recursive(&crate::fixture(name), tmp.path());
-        tmp
-    }
-
-    fn copy_dir_recursive(src: &Path, dst: &Path) {
-        for entry in std::fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-            if src_path.is_dir() {
-                std::fs::create_dir_all(&dst_path).unwrap();
-                copy_dir_recursive(&src_path, &dst_path);
-            } else {
-                std::fs::copy(&src_path, &dst_path).unwrap();
-            }
-        }
-    }
-
-    /// Create a temp workspace with a root Cargo.toml and member crates.
-    /// Each member is a tuple of (name, dependencies_toml_fragment).
-    fn temp_workspace(workspace_deps: &str, members: &[(&str, &str)]) -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            tmp.path().join("Cargo.toml"),
-            format!(
-                "[workspace]\nmembers = [\"crates/*\"]\n\n\
-                 [workspace.dependencies]\n{workspace_deps}\n"
-            ),
-        )
-        .unwrap();
-
-        for (name, deps) in members {
-            std::fs::create_dir_all(tmp.path().join(format!("crates/{name}/src"))).unwrap();
-            std::fs::write(
-                tmp.path().join(format!("crates/{name}/Cargo.toml")),
-                format!(
-                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-                     [dependencies]\n{deps}\n"
-                ),
-            )
-            .unwrap();
-            std::fs::write(tmp.path().join(format!("crates/{name}/src/lib.rs")), "").unwrap();
-        }
-
-        tmp
-    }
-
-    fn read_file(tmp: &tempfile::TempDir, relative: &str) -> String {
-        std::fs::read_to_string(tmp.path().join(relative)).unwrap()
+    /// Fix a copy of the fixture `name`, and assert that the copy matches `<name>.fixed`.
+    fn fix(name: &str) -> FixSummary {
+        let tmp = fixture_copy(name);
+        let findings = run_checks(&parse_workspace(tmp.path()).unwrap(), 2);
+        let summary = apply_fixes(&findings).unwrap();
+        assert_fixed(tmp.path(), name);
+        summary
     }
 
     #[test]
-    fn test_fix_not_inherited() {
-        let tmp = copy_fixture("not_inherited");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        let summary = apply_fixes(tmp.path(), &diags).unwrap();
-        assert_eq!(summary.fixes_applied, 1);
-
-        let content = read_file(&tmp, "crates/foo/Cargo.toml");
-        assert!(content.contains("workspace = true"));
-        assert!(!content.contains("serde = \"1.0\""));
-
-        // Re-run checks: should be clean
-        let ws2 = parse_workspace(tmp.path()).unwrap();
-        let diags2 = check::run_checks(&ws2, 2);
-        assert!(
-            diags2.is_empty(),
-            "expected no diagnostics after fix, got: {diags2:?}"
+    fn test_fix_keeps_only_inheritable_keys_and_comments() {
+        let summary = fix("fix_inheritable_keys");
+        assert_eq!(
+            summary.fixed[..2],
+            [
+                "fixed: `rand` in crates/a/Cargo.toml changed from 0.7 to 0.8 (workspace version)",
+                "fixed: `core` in crates/a/Cargo.toml now uses workspace inheritance",
+            ]
         );
     }
 
     #[test]
-    fn test_fix_version_mismatch() {
-        let tmp = copy_fixture("version_mismatch");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        let summary = apply_fixes(tmp.path(), &diags).unwrap();
-        assert_eq!(summary.fixes_applied, 1);
-
-        let content = read_file(&tmp, "crates/bar/Cargo.toml");
-        assert!(content.contains("workspace = true"));
-        assert!(!content.contains("rand = \"0.7\""));
-
-        let ws2 = parse_workspace(tmp.path()).unwrap();
-        let diags2 = check::run_checks(&ws2, 2);
-        assert!(
-            diags2.is_empty(),
-            "expected no diagnostics after fix, got: {diags2:?}"
+    fn test_fix_promotion_keeps_each_members_default_features_and_registry() {
+        let summary = fix("fix_promotion_default_features");
+        assert_eq!(
+            summary.fixed[1],
+            "fixed: `my-crate = { version = \"1.0\", registry = \"my-registry\" }` added to \
+             [workspace.dependencies], updated: crates/one/Cargo.toml, crates/two/Cargo.toml"
         );
+        assert_eq!(summary.files_modified, 3);
     }
 
     #[test]
-    fn test_fix_promotion_candidate() {
-        let tmp = copy_fixture("promotion_candidate");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::PromotionCandidate { .. }
-        ));
-
-        let summary = apply_fixes(tmp.path(), &diags).unwrap();
-        assert_eq!(summary.fixes_applied, 1);
-
-        let root_content = read_file(&tmp, "Cargo.toml");
-        assert!(root_content.contains("serde_yaml"));
-
-        for name in &["one", "two"] {
-            let content = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
-            assert!(content.contains("workspace = true"));
-            assert!(!content.contains("serde_yaml = \"0.9\""));
-        }
-
-        // Re-run checks: should be clean
-        let ws2 = parse_workspace(tmp.path()).unwrap();
-        let diags2 = check::run_checks(&ws2, 2);
-        assert!(
-            diags2.is_empty(),
-            "expected no diagnostics after fix, got: {diags2:?}"
+    fn test_fix_skips_a_fix_that_changes_what_cargo_resolves() {
+        let summary = fix("fix_skips");
+        assert_eq!(
+            summary.skipped,
+            [
+                "skipped: `serde` in crates/a/Cargo.toml sets `default-features = false`, so the \
+                 workspace entry must set it too",
+                "skipped: `core` in crates/a/Cargo.toml requires version 0.1, but the workspace \
+                 entry has no version",
+                "skipped: `my-crate` is not promoted, because [workspace.dependencies] already has it",
+                "skipped: `rand` is not promoted, because members use different versions: \
+                 crates/a/Cargo.toml (0.7), crates/b/Cargo.toml (0.8)",
+            ]
         );
+        assert_eq!(summary.files_modified, 3);
     }
 
     #[test]
-    fn test_fix_preserves_features() {
-        let tmp = temp_workspace(
-            "serde = \"1.0\"",
-            &[(
-                "app",
-                "serde = { version = \"1.0\", features = [\"derive\"] }",
-            )],
-        );
-
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        let content = read_file(&tmp, "crates/app/Cargo.toml");
-        assert!(content.contains("workspace = true"));
-        assert!(content.contains("features"));
-        assert!(!content.contains("serde = { version"));
-    }
-
-    #[test]
-    fn test_fix_valid_workspace_no_changes() {
-        let tmp = copy_fixture("valid_workspace");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert!(diags.is_empty());
-
-        let summary = apply_fixes(tmp.path(), &diags).unwrap();
-        assert_eq!(summary.fixes_applied, 0);
-    }
-
-    #[test]
-    fn test_fix_promotion_sets_default_features_false_when_any_member_disables() {
-        let tmp = temp_workspace(
-            "serde = \"1.0\"",
-            &[
-                (
-                    "one",
-                    "serde = { workspace = true }\n\
-                     ed25519-dalek = { version = \"2.1\", default-features = false }",
-                ),
-                (
-                    "two",
-                    "serde = { workspace = true }\n\
-                     ed25519-dalek = \"2.1\"",
-                ),
-            ],
-        );
-
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        // Workspace dep must have default-features = false because at least one
-        // member needs it. Without it, member `default-features = false` is
-        // silently ignored (pre-2024) or a hard error (2024 edition).
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("default-features = false"),
-            "workspace dep should have default-features = false when any member disables it, got:\n{root}"
-        );
-
-        // Member that had default-features = false should have it stripped
-        let one = read_file(&tmp, "crates/one/Cargo.toml");
-        assert!(
-            !one.contains("default-features"),
-            "member one should not have default-features after fix, got:\n{one}"
-        );
-    }
-
-    #[test]
-    fn test_fix_target_specific_not_inherited() {
-        let tmp = copy_fixture("target_deps");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        let summary = apply_fixes(tmp.path(), &diags).unwrap();
-        assert_eq!(summary.fixes_applied, 1);
-
-        let content = read_file(&tmp, "crates/plat/Cargo.toml");
-        assert!(
-            content.contains("workspace = true"),
-            "target-specific dep should use workspace inheritance, got:\n{content}"
-        );
-        assert!(
-            !content.contains("winapi = \"0.3\""),
-            "explicit version should be removed, got:\n{content}"
-        );
-
-        // Re-run checks: should be clean
-        let ws2 = parse_workspace(tmp.path()).unwrap();
-        let diags2 = check::run_checks(&ws2, 2);
-        assert!(
-            diags2.is_empty(),
-            "expected no diagnostics after fix, got: {diags2:?}"
-        );
-    }
-
-    #[test]
-    fn test_fix_strips_registry_from_member() {
-        let tmp = copy_fixture("registry_not_inherited");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        let content = read_file(&tmp, "crates/app/Cargo.toml");
-        assert!(content.contains("workspace = true"));
-        assert!(
-            !content.contains("registry"),
-            "registry should be stripped from member dep, got:\n{content}"
-        );
-    }
-
-    #[test]
-    fn test_fix_promotion_carries_registry() {
-        let tmp = copy_fixture("registry_promotion");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("registry = \"my-registry\""),
-            "promoted workspace dep should include registry, got:\n{root}"
-        );
-
-        // Members should NOT have registry (workspace owns it)
-        for name in &["one", "two"] {
-            let content = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
-            assert!(content.contains("workspace = true"));
-            assert!(
-                !content.contains("registry"),
-                "member {name} should not have registry after fix, got:\n{content}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_fix_promotion_with_target_specific_default_features() {
-        let tmp = copy_fixture("target_deps_promotion");
-        let ws = parse_workspace(tmp.path()).unwrap();
-        let diags = check::run_checks(&ws, 2);
-        assert_eq!(diags.len(), 1);
-        assert!(matches!(
-            diags[0].kind,
-            DiagnosticKind::PromotionCandidate { .. }
-        ));
-
-        apply_fixes(tmp.path(), &diags).unwrap();
-
-        let root = read_file(&tmp, "Cargo.toml");
-        assert!(
-            root.contains("default-features = false"),
-            "workspace dep should have default-features = false from target deps, got:\n{root}"
-        );
-
-        for name in &["one", "two"] {
-            let member = read_file(&tmp, &format!("crates/{name}/Cargo.toml"));
-            assert!(
-                !member.contains("default-features"),
-                "member {name} should not have default-features after fix, got:\n{member}"
-            );
-        }
+    fn test_fix_promotion_into_an_inline_workspace_of_a_root_package() {
+        fix("fix_inline_workspace_root_package");
     }
 }

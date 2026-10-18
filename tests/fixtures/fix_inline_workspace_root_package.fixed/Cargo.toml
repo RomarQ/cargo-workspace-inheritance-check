@@ -1,0 +1,7 @@
+workspace = { members = ["crates/*"], dependencies = { anyhow = "1.0" } }
+
+[package]
+name = "root"
+
+[dependencies]
+anyhow = { workspace = true }

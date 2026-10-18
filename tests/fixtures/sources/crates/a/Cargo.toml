@@ -1,0 +1,11 @@
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core", version = "0.1" }
+reg = { path = "../reg", version = "0.1", registry = "my-registry" }
+foo = { git = "https://example.invalid/foo", branch = "dev", version = "0.1" }
+other = { path = "../other", version = "0.1" }
+idx = { version = "0.1", registry-index = "sparse+https://example.invalid/index/" }

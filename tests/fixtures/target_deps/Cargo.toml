@@ -1,5 +1,0 @@
-[workspace]
-members = ["crates/*"]
-
-[workspace.dependencies]
-winapi = "0.3"

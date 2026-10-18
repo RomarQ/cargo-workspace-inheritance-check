@@ -1,0 +1,9 @@
+[package]
+name = "bar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.7"
+openssl = "0.10"
+log = "0.4"

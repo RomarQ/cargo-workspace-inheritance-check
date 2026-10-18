@@ -41,30 +41,38 @@ runs:
   steps:
     - name: Install cargo-workspace-inheritance-check
       shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
-          cargo install cargo-workspace-inheritance-check
+        if [ "$INPUT_VERSION" = "latest" ]; then
+          cargo install --locked cargo-workspace-inheritance-check
         else
-          cargo install cargo-workspace-inheritance-check --version "${{ inputs.version }}"
+          cargo install --locked cargo-workspace-inheritance-check --version "$INPUT_VERSION"
         fi
 
     - name: Run cargo-workspace-inheritance-check
       shell: bash
+      # Inputs reach the script through env, so their text is never parsed as shell code.
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_PROMOTION_THRESHOLD: ${{ inputs.promotion-threshold }}
+        INPUT_PROMOTION_FAILURE: ${{ inputs.promotion-failure }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_NO_FAIL: ${{ inputs.no-fail }}
+        INPUT_FIX: ${{ inputs.fix }}
       run: |
-        ARGS="--path ${{ inputs.path }}"
-        ARGS="$ARGS --promotion-threshold ${{ inputs.promotion-threshold }}"
-        ARGS="$ARGS --format ${{ inputs.format }}"
+        args=(--path "$INPUT_PATH" --promotion-threshold "$INPUT_PROMOTION_THRESHOLD" --format "$INPUT_FORMAT")
 
-        if [ "${{ inputs.promotion-failure }}" = "true" ]; then
-          ARGS="$ARGS --promotion-failure"
+        if [ "$INPUT_PROMOTION_FAILURE" = "true" ]; then
+          args+=(--promotion-failure)
         fi
 
-        if [ "${{ inputs.no-fail }}" = "true" ]; then
-          ARGS="$ARGS --no-fail"
+        if [ "$INPUT_NO_FAIL" = "true" ]; then
+          args+=(--no-fail)
         fi
 
-        if [ "${{ inputs.fix }}" = "true" ]; then
-          ARGS="$ARGS --fix"
+        if [ "$INPUT_FIX" = "true" ]; then
+          args+=(--fix)
         fi
 
-        cargo workspace-inheritance-check $ARGS
+        cargo workspace-inheritance-check "${args[@]}"
