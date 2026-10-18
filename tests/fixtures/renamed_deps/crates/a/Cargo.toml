@@ -1,0 +1,9 @@
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde1 = { package = "serde", version = "1.0" }
+md5 = "0.7"
+rand_old = { package = "rand", version = "0.7" }

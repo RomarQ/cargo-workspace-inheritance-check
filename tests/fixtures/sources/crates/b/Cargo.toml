@@ -1,0 +1,10 @@
+[package]
+name = "b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+other = { path = "../other", version = "0.1" }
+foo = { git = "https://example.invalid/foo.git/", version = "0.1" }
+idx = { version = "0.1", registry = "crates-io" }

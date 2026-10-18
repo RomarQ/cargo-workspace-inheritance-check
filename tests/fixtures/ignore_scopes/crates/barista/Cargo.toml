@@ -1,0 +1,9 @@
+[package]
+name = "barista"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.7"
+serde = "1.0"
+log = "0.4"

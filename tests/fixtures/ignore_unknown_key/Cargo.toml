@@ -1,0 +1,5 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.metadata.inheritance-check]
+ignore = [{ dependency = "rand", members = "crates/bar" }]

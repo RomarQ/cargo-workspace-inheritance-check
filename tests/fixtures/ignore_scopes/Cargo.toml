@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+rand = "0.8"
+serde = "1.0"
+
+[workspace.metadata.inheritance-check]
+ignore = [
+  { dependency = "rand", member = "crates/bar" },
+  { dependency = "rand", member = "./crates/baz/" },
+  { dependency = "serde", member = "crates/baz/Cargo.toml" },
+  { dependency = "openssl", member = "." },
+  { dependency = "log" },
+]

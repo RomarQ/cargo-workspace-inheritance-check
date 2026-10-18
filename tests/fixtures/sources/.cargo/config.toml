@@ -1,0 +1,2 @@
+[registries.my-registry]
+index = "sparse+https://example.invalid/index/"

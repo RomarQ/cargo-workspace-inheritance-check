@@ -1,0 +1,8 @@
+[package]
+name = "b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+my-crate = "1.0"

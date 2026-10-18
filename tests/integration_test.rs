@@ -14,14 +14,22 @@ fn run(root: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// Write `files` (relative path, content) into a new temp dir.
-fn temp_tree(files: &[(&str, &str)]) -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
-    for (path, content) in files {
-        let path = tmp.path().join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
+/// A copy of the fixture workspace `name`, because `--fix` writes to it.
+fn fixture_copy(name: &str) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
     }
+    let tmp = tempfile::tempdir().unwrap();
+    copy(&Path::new("tests/fixtures").join(name), tmp.path());
     tmp
 }
 
@@ -75,44 +83,7 @@ fn test_version_mismatch_json_names_the_member_relative_to_the_workspace_root() 
 
 #[test]
 fn test_fix_keeps_what_cargo_resolves() {
-    let member = |name: &str, deps: &str| {
-        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n{deps}")
-    };
-    let a = member(
-        "a",
-        "[dependencies]\n\
-         serde = { version = \"1.0\", features = [\"derive\"], optional = true }\n\
-         tokio = \"1\"\n\
-         ed25519-dalek = { version = \"2.1\", default-features = false }\n\
-         my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\n\
-         [dev-dependencies.rand]\nversion = \"0.8\"\n\n\
-         [target.'cfg(windows)'.dependencies]\nwinapi = \"0.3\"\n",
-    );
-    let b = member(
-        "b",
-        "[dependencies]\n\
-         ed25519-dalek = \"2.1\"\n\
-         my-crate = { version = \"1.0\", registry = \"my-registry\" }\n\n\
-         [dev-dependencies]\nrand = \"0.8\"\n\n\
-         [target.'cfg(windows)'.dependencies]\n\
-         winapi = { version = \"0.3\", features = [\"winuser\"] }\n",
-    );
-    let tmp = temp_tree(&[
-        (
-            "Cargo.toml",
-            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nserde = \"1.0\"\n\
-             tokio = { version = \"1\", default-features = false }\n",
-        ),
-        (
-            ".cargo/config.toml",
-            "[registries.my-registry]\nindex = \"sparse+https://example.invalid/index/\"\n",
-        ),
-        ("crates/a/Cargo.toml", &a),
-        ("crates/a/src/lib.rs", ""),
-        ("crates/b/Cargo.toml", &b),
-        ("crates/b/src/lib.rs", ""),
-    ]);
-
+    let tmp = fixture_copy("fix_keeps_resolution");
     let before = cargo_metadata(tmp.path());
     let output = run(tmp.path(), &["--fix"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -125,19 +96,7 @@ fn test_fix_keeps_what_cargo_resolves() {
 
 #[test]
 fn test_problems_left_by_fix_fail_unless_no_fail() {
-    let tmp = temp_tree(&[
-        (
-            "Cargo.toml",
-            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nserde = \"1.0\"\n",
-        ),
-        (
-            "crates/a/Cargo.toml",
-            "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [dependencies]\nserde = { version = \"1.0\", default-features = false }\n",
-        ),
-        ("crates/a/src/lib.rs", ""),
-    ]);
-
+    let tmp = fixture_copy("fix_leaves_problems");
     let output = run(tmp.path(), &["--fix"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("skipped: `serde`"));

@@ -372,29 +372,19 @@ fn str_field(table: &dyn TableLike, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::temp_workspace;
+    use crate::fixtures::fixture;
 
     #[test]
     fn test_no_workspace_section() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        let err = parse_workspace(dir.path()).unwrap_err();
+        let err = parse_workspace(&fixture("no_workspace")).unwrap_err();
         assert!(err.starts_with("No [workspace] section in "), "{err}");
     }
 
     #[test]
     fn test_invalid_ignore_rule_is_an_error() {
-        let rules = [
-            "{ dependency = \"rand\", member = [\"crates/bar\"] }",
-            "{ dependency = \"rand\", members = \"crates/bar\" }",
-        ];
-        for rule in rules {
-            let tmp = temp_workspace(
-                &format!("\n[workspace.metadata.inheritance-check]\nignore = [{rule}]"),
-                &[("bar", "")],
-            );
-            let err = parse_workspace(tmp.path()).unwrap_err();
-            assert!(err.contains("Invalid `ignore`"), "{rule}: {err}");
+        for name in ["ignore_member_not_a_string", "ignore_unknown_key"] {
+            let err = parse_workspace(&fixture(name)).unwrap_err();
+            assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
         }
     }
 }

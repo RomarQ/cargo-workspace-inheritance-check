@@ -1,0 +1,16 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+serde = "1.0"
+
+[dev_dependencies]
+cc = "1.0"
+
+[build_dependencies]
+cc = "1.0"
+
+[target]
+"cfg(unix)" = { dev_dependencies = { cc = "1.0" } }

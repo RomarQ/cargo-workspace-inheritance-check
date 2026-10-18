@@ -1,0 +1,8 @@
+[package]
+name = "one"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ed25519-dalek = { workspace = true, default-features = true }
+my-crate = { workspace = true }

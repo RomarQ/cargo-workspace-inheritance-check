@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { path = "crates/core", version = "0.1" }
+reg = { path = "crates/reg", version = "0.1" }
+foo = { git = "https://example.invalid/foo", version = "0.1" }
+idx = "0.1"

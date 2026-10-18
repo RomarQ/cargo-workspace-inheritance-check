@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = "1.0"
+tokio = { version = "1", default-features = false }
