@@ -60,6 +60,8 @@ pub struct MemberDep {
     pub table: DepTable,
     pub key: String,
     pub spec: DepSpec,
+    /// The entry as the manifest writes it.
+    pub(crate) entry: Item,
 }
 
 /// A dependency table in a manifest, such as `[dependencies]` or
@@ -339,6 +341,7 @@ fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>,
                 table: table.clone(),
                 key: key.to_string(),
                 spec,
+                entry: item.clone(),
             });
         }
     }

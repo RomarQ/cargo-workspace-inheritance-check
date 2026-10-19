@@ -76,6 +76,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let key = &dep.key;
     let member = &dep.member;
     let rewrite = edit(dep, ws.default_features);
+    let blocker = blocker(dep, ws);
     let (kind, description) = match (&dep.spec.version, &ws.version) {
         (Some(from), Some(to)) if from != to => (
             DiagnosticKind::VersionMismatch {
@@ -90,33 +91,21 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
                 version: version.clone(),
                 member: member.clone(),
                 workspace_version: workspace_version.clone(),
-                enable_default_features: rewrite.enable_default_features,
+                suggestion: match &blocker {
+                    Some(blocker) => Err(blocker.clone()),
+                    None => Ok(rewrite.entry().to_string()),
+                },
             },
             format!("`{key}` in {member} now uses workspace inheritance"),
         ),
     };
-    let fix = if !dep.spec.default_features && ws.default_features {
-        Err(format!(
-            "`{key}` in {member} sets `default-features = false`, so the workspace entry \
-             must set it too"
-        ))
-    } else if let (Some(version), None) = (&dep.spec.version, &ws.version) {
-        Err(format!(
-            "`{key}` in {member} requires version {version}, but the workspace entry has \
-             no version"
-        ))
-    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
-        Err(format!(
-            "`{key}` in {member} uses edition {}, so the workspace entry must use \
-             `default-features`, not `default_features`",
-            dep.edition,
-        ))
-    } else {
-        Ok(Fix {
+    let fix = match blocker {
+        Some(blocker) => Err(format!("`{key}` in {member} {blocker}")),
+        None => Ok(Fix {
             promotion: None,
             edits: vec![rewrite],
             description,
-        })
+        }),
     };
     let diagnostic = Diagnostic {
         severity: Severity::Error,
@@ -124,6 +113,26 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
         kind,
     };
     Finding { diagnostic, fix }
+}
+
+/// Why `dep` cannot inherit `ws` as it is, as a clause after the entry's name: inheriting would
+/// change what cargo resolves, or cargo would reject the inherited entry.
+fn blocker(dep: &MemberDep, ws: &DepSpec) -> Option<String> {
+    if !dep.spec.default_features && ws.default_features {
+        Some("sets `default-features = false`, so the workspace entry must set it too".into())
+    } else if let (Some(version), None) = (&dep.spec.version, &ws.version) {
+        Some(format!(
+            "requires version {version}, but the workspace entry has no version"
+        ))
+    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
+        Some(format!(
+            "uses edition {}, so the workspace entry must use `default-features`, not \
+             `default_features`",
+            dep.edition,
+        ))
+    } else {
+        None
+    }
 }
 
 /// Promote only a version that every usage already declares, so `--fix` changes no member's
@@ -301,27 +310,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_not_inherited_names_default_features_only_where_the_member_needs_them() {
-        let found: Vec<_> = check("fix_inheritable_keys")
+    /// The (dependency, suggestion) of each not-inherited error.
+    fn suggestions(name: &str) -> Vec<(String, Result<String, String>)> {
+        check(name)
             .into_iter()
             .filter_map(|d| match d.kind {
-                DiagnosticKind::NotInherited {
-                    enable_default_features,
-                    ..
-                } => Some((d.dependency, enable_default_features)),
+                DiagnosticKind::NotInherited { suggestion, .. } => Some((d.dependency, suggestion)),
                 _ => None,
             })
-            .collect();
-        let expected = [
-            ("core", false),
-            ("serde1", false),
-            ("log", false),
-            ("tokio", true),
-        ];
+            .collect()
+    }
+
+    #[test]
+    fn test_not_inherited_suggests_the_entry_that_fix_writes_or_why_it_skips() {
+        let ok = |key: &str, entry: &str| -> (String, Result<String, String>) {
+            (key.into(), Ok(entry.into()))
+        };
         assert_eq!(
-            found,
-            expected.map(|(key, enable)| (key.to_string(), enable))
+            suggestions("fix_inheritable_keys"),
+            [
+                ok(
+                    "core",
+                    r#"{ workspace = true, features = ["x"], optional = true }"#
+                ),
+                ok("serde1", "{ workspace = true }"),
+                ok("log", "{ workspace = true }"),
+                ok(
+                    "tokio",
+                    r#"{ workspace = true, features = ["full"], default-features = true }"#
+                ),
+            ]
+        );
+        let skipped = |key: &str, blocker: &str| -> (String, Result<String, String>) {
+            (key.into(), Err(blocker.into()))
+        };
+        assert_eq!(
+            suggestions("fix_skips"),
+            [
+                skipped(
+                    "serde",
+                    "sets `default-features = false`, so the workspace entry must set it too"
+                ),
+                skipped(
+                    "core",
+                    "requires version 0.1, but the workspace entry has no version"
+                ),
+            ]
         );
     }
 

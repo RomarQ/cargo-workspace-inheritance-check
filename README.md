@@ -20,6 +20,13 @@ A crate declares a dependency with an explicit version that already exists in `[
 error: `serde = "1.0"` in crates/foo/Cargo.toml should use `serde = { workspace = true }`
 ```
 
+The suggested entry is the entry that `--fix` writes. It keeps `features`, `optional`, and `public`, and it adds `default-features = true` when the member needs it. When `--fix` skips the entry, the error gives the reason, not an entry:
+
+```
+error: `core = "0.1"` in crates/foo/Cargo.toml should inherit from [workspace.dependencies]
+  hint: it requires version 0.1, but the workspace entry has no version
+```
+
 ### 2. Version mismatch (error)
 
 A crate declares a dependency with a different version than what's in `[workspace.dependencies]`.

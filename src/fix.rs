@@ -39,6 +39,14 @@ pub(crate) struct Edit {
     pub enable_default_features: bool,
 }
 
+impl Edit {
+    /// The entry that the edit writes, in its inline form. An entry in the
+    /// `[dependencies.serde]` form stays in that form, with the same keys.
+    pub(crate) fn entry(&self) -> InlineTable {
+        inherited_entry(&self.dep.entry, self.enable_default_features)
+    }
+}
+
 /// What [`apply_fixes`] did.
 #[derive(Debug, Default)]
 pub struct FixSummary {
@@ -140,26 +148,33 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
         return true;
     }
 
+    let mut inherited = inherited_entry(item, enable_default_features);
     let Some(value) = item.as_value_mut() else {
         return false;
     };
+    // toml_edit keeps the comment after an entry in the value's decor.
+    *inherited.decor_mut() = value.decor().clone();
+    *value = Value::InlineTable(inherited);
+    true
+}
+
+/// The inline entry `{ workspace = true }`, with the keys of `entry` that cargo reads on an
+/// inherited entry.
+fn inherited_entry(entry: &Item, enable_default_features: bool) -> InlineTable {
     let mut inherited = InlineTable::new();
     inherited.insert("workspace", true.into());
-    if let Some(existing) = value.as_inline_table() {
-        for (k, v) in existing.iter() {
-            if INHERITABLE_KEYS.contains(&k) {
-                inherited.insert(k, v.clone());
-            }
+    for (key, item) in entry.as_table_like().into_iter().flat_map(|t| t.iter()) {
+        if INHERITABLE_KEYS.contains(&key)
+            && let Some(value) = item.as_value()
+        {
+            inherited.insert(key, value.clone());
         }
     }
     if enable_default_features {
         inherited.insert("default-features", true.into());
     }
     inherited.fmt();
-    // toml_edit keeps the comment after an entry in the value's decor.
-    *inherited.decor_mut() = value.decor().clone();
-    *value = Value::InlineTable(inherited);
-    true
+    inherited
 }
 
 /// Insert `promotion` into the root document. Returns `false` when the key already exists.
