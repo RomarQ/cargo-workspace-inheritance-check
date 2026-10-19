@@ -291,6 +291,10 @@ mod tests {
             let path = tmp.path().join(manifest);
             std::fs::write(&path, crlf(&path)).unwrap();
         }
+        // A stray `\n` line follows the line ending of most lines.
+        let member = tmp.path().join("crates/a/Cargo.toml");
+        let text = std::fs::read_to_string(&member).unwrap();
+        std::fs::write(&member, text.replacen("\r\n", "\n", 1)).unwrap();
         apply_fixes(&run_checks(&parse_workspace(tmp.path()).unwrap(), 2)).unwrap();
         let written = std::fs::read_to_string(tmp.path().join("crates/a/Cargo.toml")).unwrap();
         let fixed = fixture("fix_inheritable_keys.fixed").join("crates/a/Cargo.toml");
