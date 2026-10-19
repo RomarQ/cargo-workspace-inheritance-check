@@ -55,7 +55,7 @@ By default, this is reported as a **warning** and does not cause the tool to exi
 
 - The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo. It runs the cargo in `CARGO`, which cargo sets when you run `cargo workspace-inheritance-check`, or else `cargo` on `PATH`. An empty `CARGO` counts as unset. The tool resolves a relative `CARGO` path from the current directory, and looks up a bare name, such as `cargo-1.88`, on `PATH`.
 - Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. A path or git entry must also name the same `registry` or `registry-index`, because `cargo publish` writes that registry for the dependency. As in cargo, a git or `registry-index` URL ignores the case of its scheme and of an `http` or `https` host. It also ignores a default port, one trailing `/`, and a final `.git`. A `github.com` URL also ignores the case of its path, and its scheme when the scheme has no `+`. `registry = "crates-io"` is crates.io. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
-- A version requirement with only numbers and an optional `^`, such as `"1"` or `"^1.0"`, is compared by the versions it matches, as cargo reads it. So `"1"` and `"1.0"` are the same requirement, and `"0"` and `"0.0"` are not. Any other requirement is compared as written.
+- A version requirement with only numbers and an optional `^`, such as `"1"` or `"^1.0"`, is compared by the versions it matches. So `"1"` and `"1.0"` are the same requirement, and `"0"` and `"0.0"` are not. Any other requirement is compared as written.
 - A path or git dependency without a version is not checked.
 - A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A `registry-index`, path, or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
 
@@ -202,7 +202,7 @@ All inputs are optional:
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
 | `fix` | Automatically fix reported problems | `false` |
-| `version` | Version to install, or `path` to build the crate in the action's own directory, so that the binary matches the action ref | `latest` |
+| `version` | Version to install, or `path` to build the crate in the action's own directory. With `path`, the binary matches the action ref. | `latest` |
 
 ### Without the action
 

@@ -208,8 +208,8 @@ pub(crate) fn dep_table_mut<'a>(
 ///
 /// # Errors
 ///
-/// Returns an error when no workspace root is found, when cargo fails, when a manifest cannot be
-/// read or parsed, or when an ignore rule is invalid.
+/// Returns an error when no workspace root is found, or when cargo fails. Also returns an error
+/// when a manifest cannot be read or parsed, or when an ignore rule is invalid.
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let (root_dir, doc) = workspace_manifest(path)?;
     let root_toml_path = root_dir.join("Cargo.toml");
