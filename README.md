@@ -234,4 +234,4 @@ All dependency sections in member crates are checked:
 - `[dev-dependencies]`
 - `[build-dependencies]`
 - `[target.'...'.dependencies]` (and dev/build variants)
-- `[dev_dependencies]` and `[build_dependencies]`, the spellings that cargo accepts before edition 2024. Cargo ignores such a table when the hyphen spelling is also present, and so does the tool.
+- `[dev_dependencies]` and `[build_dependencies]`, the spellings that cargo accepts before edition 2024.

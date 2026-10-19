@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reads_every_dependency_table_except_a_shadowed_one() {
+    fn test_reads_every_dependency_table() {
         let diags = check("dependency_tables");
         let app = "crates/app/Cargo.toml";
         assert_eq!(

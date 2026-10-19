@@ -31,7 +31,7 @@ All notable changes to this project will be documented in this file.
 - `--fix` keeps the CRLF line endings of a manifest where most lines end in CRLF, unless a multi-line string holds a bare LF.
 - In the `[dependencies.serde]` form, `--fix` moves the comments of a removed key to the `workspace = true` line.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
-- Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
+- Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked.
 - `--path ./x` gives member paths relative to the workspace root.
 - The promotion warning for one crate says `appears in 1 crate`.
 - The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. Each input is one argument, so an input can no longer add other flags. It installs with `--locked`.
