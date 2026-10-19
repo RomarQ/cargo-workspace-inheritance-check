@@ -180,7 +180,8 @@ fn promotion_fix(
             listed.join(", "),
         ));
     }
-    let Some(version) = first else {
+    // The promotion writes the version that the hint suggests.
+    let Some(version) = most_common_version(usages) else {
         return Err(format!(
             "`{key}` is not promoted, because no member gives a version"
         ));
@@ -191,7 +192,7 @@ fn promotion_fix(
             dep.member,
         ));
     }
-    let value = dep_value(version, registry, default_features);
+    let value = dep_value(&version, registry, default_features);
     let description = format!(
         "`{key} = {value}` added to [workspace.dependencies], updated: {}",
         members.join(", "),
@@ -261,7 +262,7 @@ fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
 }
 
 /// `true` when `a` and `b` match the same versions. A caret requirement with only numbers, such
-/// as `1` or `^1.0`, compares by its bounds, so `1` and `1.0` are the same and `0` and `0.0` are
+/// as `1` or `^1.0`, compares by its bounds. So `1` and `1.0` are the same, and `0` and `0.0` are
 /// not. Any other requirement compares as written.
 fn same_requirement(a: &str, b: &str) -> bool {
     match (caret_bounds(a), caret_bounds(b)) {
@@ -271,16 +272,22 @@ fn same_requirement(a: &str, b: &str) -> bool {
 }
 
 /// The lower bound and the excluded upper bound of a caret requirement with only numbers, by
-/// cargo's caret rules.
+/// cargo's caret rules. `None` for any other requirement, and for one that cargo rejects, such as
+/// `01`.
 fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
-    let requirement = requirement.trim();
+    let requirement = requirement.trim_matches(' ');
     let version = requirement
         .strip_prefix('^')
         .unwrap_or(requirement)
-        .trim_start();
+        .trim_start_matches(' ');
+    let number = |part: &str| {
+        let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let leading_zero = part.len() > 1 && part.starts_with('0');
+        (digits && !leading_zero).then(|| part.parse().ok())?
+    };
     let parts = version
         .split('.')
-        .map(|part| part.parse().ok())
+        .map(number)
         .collect::<Option<Vec<u64>>>()?;
     let (major, minor, patch) = match parts[..] {
         [major] => (major, None, None),
@@ -395,7 +402,11 @@ mod tests {
                     DiagnosticKind::VersionMismatch { .. } => "mismatch".to_string(),
                     DiagnosticKind::PromotionCandidate {
                         suggested_version, ..
-                    } => format!("promotion {suggested_version:?}"),
+                    } => {
+                        let written = f.fix.as_ref().ok().and_then(|fix| fix.promotion.as_ref());
+                        let written = written.map(|p| p.value.to_string());
+                        format!("promotion {suggested_version:?} writes {written:?}")
+                    }
                 };
                 (f.diagnostic.dependency, kind, f.fix.is_ok())
             })
@@ -405,7 +416,12 @@ mod tests {
             ("log", "not-inherited", true),
             ("zero", "mismatch", true),
             ("rand", "mismatch", true),
-            ("itoa", "promotion Some(\"1\")", true),
+            ("lead", "mismatch", true),
+            (
+                "itoa",
+                "promotion Some(\"1\") writes Some(\"\\\"1\\\"\")",
+                true,
+            ),
         ];
         assert_eq!(
             found,
