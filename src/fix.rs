@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use toml_edit::{DocumentMut, InlineTable, Item, RawString, Table, TableLike, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
 
 use crate::check::Finding;
 use crate::workspace::{Manifest, MemberDep, dep_table_mut, read_manifest, write_manifest};
@@ -140,19 +140,10 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
         return false;
     };
 
-    // `[dependencies.serde]` form: edit the table in place, so its comments stay. The comments of
-    // a removed key go to the `workspace` line that replaces it.
+    // `[dependencies.serde]` form: edit the table in place, so its comments stay.
     if let Some(dep) = item.as_table_mut() {
-        let (lines, after) = removed_comments(dep);
         dep.retain(|k, _| INHERITABLE_KEYS.contains(&k));
-        let mut inherit = toml_edit::value(true);
-        if let Some(value) = inherit.as_value_mut() {
-            value.decor_mut().set_suffix(after);
-        }
-        dep.insert("workspace", inherit);
-        if let Some(mut key) = dep.key_mut("workspace") {
-            key.leaf_decor_mut().set_prefix(lines);
-        }
+        dep.insert("workspace", toml_edit::value(true));
         if enable_default_features {
             dep.insert("default-features", toml_edit::value(true));
         }
@@ -167,35 +158,6 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
     *inherited.decor_mut() = value.decor().clone();
     *value = Value::InlineTable(inherited);
     true
-}
-
-/// The comments of the keys of `table` that an inherited entry leaves out: the comment lines
-/// before them, and the first comment after a value. A later comment after a value becomes a line.
-fn removed_comments(table: &Table) -> (String, String) {
-    fn comment(raw: Option<&RawString>) -> Option<&str> {
-        raw.and_then(RawString::as_str)
-            .filter(|text| text.contains('#'))
-    }
-    let mut lines = String::new();
-    let mut after: Option<&str> = None;
-    for (name, item) in table.iter() {
-        if INHERITABLE_KEYS.contains(&name) {
-            continue;
-        }
-        let key = table.key(name).expect("an entry has a key");
-        if let Some(before) = comment(key.leaf_decor().prefix()) {
-            lines.push_str(before);
-        }
-        match (
-            comment(item.as_value().and_then(|v| v.decor().suffix())),
-            after,
-        ) {
-            (Some(text), None) => after = Some(text),
-            (Some(text), Some(_)) => lines.push_str(&format!("{}\n", text.trim_start())),
-            (None, _) => {}
-        }
-    }
-    (lines, after.unwrap_or_default().to_string())
 }
 
 /// The inline entry `{ workspace = true }`, with the keys of `entry` that cargo reads on an
@@ -291,10 +253,6 @@ mod tests {
             let path = tmp.path().join(manifest);
             std::fs::write(&path, crlf(&path)).unwrap();
         }
-        // A stray `\n` line follows the line ending of most lines.
-        let member = tmp.path().join("crates/a/Cargo.toml");
-        let text = std::fs::read_to_string(&member).unwrap();
-        std::fs::write(&member, text.replacen("\r\n", "\n", 1)).unwrap();
         apply_fixes(&run_checks(&parse_workspace(tmp.path()).unwrap(), 2)).unwrap();
         let written = std::fs::read_to_string(tmp.path().join("crates/a/Cargo.toml")).unwrap();
         let fixed = fixture("fix_inheritable_keys.fixed").join("crates/a/Cargo.toml");

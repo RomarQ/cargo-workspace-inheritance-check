@@ -16,7 +16,5 @@ log = { workspace = true }
 features = [
     "full", # all of it
 ] # needed
-# pinned for the MSRV
-# the defaults
-workspace = true # held
+workspace = true
 default-features = true

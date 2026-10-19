@@ -124,44 +124,19 @@ const DEP_KINDS: [&str; 5] = [
 /// A parsed manifest, and the line ending that its file uses.
 pub(crate) struct Manifest {
     pub doc: DocumentMut,
-    /// Write `\r\n` line endings, because most lines of the file end in `\r\n`. No multi-line
-    /// string holds a bare `\n`, so the change touches no value.
+    /// Every line of the file ends in `\r\n`.
     crlf: bool,
 }
 
 pub(crate) fn read_manifest(path: &Path) -> Result<Manifest, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    let doc: DocumentMut = content
+    let doc = content
         .parse()
         .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
-    let crlf_lines = content.matches("\r\n").count();
-    let lf_lines = content.matches('\n').count() - crlf_lines;
-    let crlf = crlf_lines > lf_lines && !doc.iter().any(|(_, item)| bare_lf_in_string(item));
+    // Only when every line ends in `\r\n` does the conversion leave each string value as it is.
+    let crlf = content.contains("\r\n") && !content.replace("\r\n", "").contains('\n');
     Ok(Manifest { doc, crlf })
-}
-
-/// `true` when `item` holds a multi-line string with a `\n` that has no `\r` before it.
-fn bare_lf_in_string(item: &Item) -> bool {
-    fn in_value(value: &Value) -> bool {
-        match value {
-            Value::String(text) => text
-                .as_repr()
-                .and_then(|repr| repr.as_raw().as_str())
-                .is_some_and(|raw| raw.replace("\r\n", "").contains('\n')),
-            Value::Array(array) => array.iter().any(in_value),
-            Value::InlineTable(table) => table.iter().any(|(_, value)| in_value(value)),
-            _ => false,
-        }
-    }
-    match item {
-        Item::Value(value) => in_value(value),
-        Item::Table(table) => table.iter().any(|(_, item)| bare_lf_in_string(item)),
-        Item::ArrayOfTables(tables) => tables
-            .iter()
-            .any(|table| table.iter().any(|(_, item)| bare_lf_in_string(item))),
-        Item::None => false,
-    }
 }
 
 /// Write `manifest` to `path` with the line ending that its file used.
