@@ -137,7 +137,7 @@ const DEP_KINDS: [&str; 5] = [
 /// A parsed manifest, and the line ending that its file uses.
 pub(crate) struct Manifest {
     pub doc: DocumentMut,
-    /// The first line of the file ends in `\r\n`.
+    /// Every line of the file ends in `\r\n`.
     crlf: bool,
 }
 
@@ -147,9 +147,7 @@ pub(crate) fn read_manifest(path: &Path) -> Result<Manifest, String> {
     let doc = content
         .parse()
         .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
-    let crlf = content
-        .find('\n')
-        .is_some_and(|end| content[..end].ends_with('\r'));
+    let crlf = content.contains("\r\n") && !content.replace("\r\n", "").contains('\n');
     Ok(Manifest { doc, crlf })
 }
 

@@ -298,6 +298,20 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_keeps_the_newlines_of_a_string_in_a_file_with_mixed_line_endings() {
+        let tmp = fixture_copy("fix_inheritable_keys");
+        let manifest = tmp.path().join("crates/a/Cargo.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        let mixed = text
+            .replace('\n', "\r\n")
+            .replace("Two lines\r\nof text", "Two lines\nof text");
+        std::fs::write(&manifest, mixed).unwrap();
+        apply_fixes(&run_checks(&parse_workspace(tmp.path()).unwrap(), 2)).unwrap();
+        let written = std::fs::read_to_string(&manifest).unwrap();
+        assert!(written.contains("Two lines\nof text"), "{written:?}");
+    }
+
+    #[test]
     fn test_fix_promotion_keeps_each_members_default_features_and_registry() {
         let summary = fix("fix_promotion_default_features");
         assert_eq!(
