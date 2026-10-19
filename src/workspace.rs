@@ -8,7 +8,7 @@ use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
-use toml_edit::{Decor, DocumentMut, InlineTable, Item, RawString, TableLike, Value};
+use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 /// A parsed workspace.
 #[derive(Debug)]
@@ -20,9 +20,6 @@ pub struct WorkspaceInfo {
     /// The member entries without `workspace = true` that no ignore rule covers, grouped by member
     /// in manifest path order. Path and git entries that give no version are left out.
     pub member_deps: Vec<MemberDep>,
-    /// `true` when a promotion would respace an inline table of the root manifest that has a
-    /// comment between its braces, and so lose the comment.
-    pub(crate) root_inline_comment: bool,
 }
 
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
@@ -270,7 +267,6 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         root_path: metadata.workspace_root,
         workspace_deps,
         member_deps,
-        root_inline_comment: root_inline_comment(&doc),
     })
 }
 
@@ -529,36 +525,6 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     })
 }
 
-/// `true` when the `[workspace]` table of `doc`, or its `dependencies`, is an inline table with a
-/// comment between its braces.
-fn root_inline_comment(doc: &DocumentMut) -> bool {
-    let workspace = doc.get("workspace");
-    let dependencies = workspace.and_then(|workspace| workspace.get("dependencies"));
-    workspace.is_some_and(has_inline_comment) || dependencies.is_some_and(has_inline_comment)
-}
-
-/// `true` when `entry` is an inline table with a comment between its braces, also in an inline
-/// table inside it. Only TOML 1.1 allows such a comment, and a rewrite to one line loses it.
-pub(crate) fn has_inline_comment(entry: &Item) -> bool {
-    entry.as_inline_table().is_some_and(inline_table_comment)
-}
-
-fn inline_table_comment(table: &InlineTable) -> bool {
-    let comment = |raw: Option<&RawString>| {
-        raw.and_then(RawString::as_str)
-            .is_some_and(|text| text.contains('#'))
-    };
-    let in_decor = |decor: &Decor| comment(decor.prefix()) || comment(decor.suffix());
-    comment(Some(table.trailing()))
-        || table.iter().any(|(name, value)| {
-            let key = table.key(name).expect("an entry has a key");
-            in_decor(key.leaf_decor())
-                || in_decor(key.dotted_decor())
-                || in_decor(value.decor())
-                || value.as_inline_table().is_some_and(inline_table_comment)
-        })
-}
-
 fn str_field(table: &dyn TableLike, key: &str) -> Option<String> {
     table.get(key)?.as_str().map(String::from)
 }
@@ -591,34 +557,6 @@ mod tests {
         let ws = parse_workspace(&fixture("member_config/crates/a")).unwrap();
         let deps: Vec<_> = ws.member_deps.iter().map(|d| d.key.as_str()).collect();
         assert_eq!(deps, ["foo"]);
-    }
-
-    #[test]
-    fn test_only_a_comment_between_inline_braces_blocks_the_rewrite() {
-        let manifest = read_manifest(&fixture("inline_comments").join("Cargo.toml")).unwrap();
-        let entries = manifest.doc["dependencies"].as_table_like().unwrap();
-        let found: Vec<_> = entries
-            .iter()
-            .map(|(key, entry)| (key, has_inline_comment(entry)))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                ("before_key", true),
-                ("after_comma", true),
-                ("before_brace", true),
-                ("dotted", true),
-                ("nested", true),
-                ("multi_line", false),
-                ("in_array", false),
-                ("after_entry", false),
-            ]
-        );
-        assert!(root_inline_comment(&manifest.doc));
-        let inline = read_manifest(&fixture("inline_comment_workspace").join("Cargo.toml"));
-        assert!(root_inline_comment(&inline.unwrap().doc));
-        let plain = read_manifest(&fixture("fix_inline_workspace_root_package").join("Cargo.toml"));
-        assert!(!root_inline_comment(&plain.unwrap().doc));
     }
 
     #[test]
