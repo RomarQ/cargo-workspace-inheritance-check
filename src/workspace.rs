@@ -101,8 +101,8 @@ pub enum DepSource {
     Registry(Registry),
     /// A local path, resolved against the directory of the manifest that declares it.
     Path { path: PathBuf, registry: Registry },
-    /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
-    /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
+    /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL is in
+    /// the form that cargo compares sources by.
     Git {
         url: String,
         branch: Option<String>,
@@ -119,7 +119,7 @@ pub enum Registry {
     CratesIo,
     /// An alternate registry by name, from `registry`.
     Named(String),
-    /// A registry by index URL, from `registry-index`.
+    /// A registry by index URL, from `registry-index`, in the form that cargo compares.
     Index(String),
 }
 
@@ -430,7 +430,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         return None;
     }
     let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
-        (Some(index), _) => Registry::Index(index),
+        (Some(index), _) => Registry::Index(canonical_url(&index)),
         (None, Some(name)) if name != "crates-io" => Registry::Named(name),
         (None, _) => Registry::CratesIo,
     };
@@ -439,9 +439,8 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         DepSource::Path { path, registry }
     } else if let Some(url) = str_field(t, "git") {
-        let url = url.strip_suffix('/').unwrap_or(&url);
         DepSource::Git {
-            url: url.strip_suffix(".git").unwrap_or(url).to_string(),
+            url: canonical_url(&url),
             branch: str_field(t, "branch"),
             tag: str_field(t, "tag"),
             rev: str_field(t, "rev"),
@@ -461,6 +460,51 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         default_features: default_features.unwrap_or(true),
         underscore_default_features: t.contains_key("default_features"),
     })
+}
+
+/// `url` in the form that cargo compares sources by, so two URLs are the same source when their
+/// forms are equal. As cargo's `CanonicalUrl` on a parsed URL, it lowercases the scheme, and the
+/// host of an `http` or `https` URL, and drops their default port. It strips one trailing `/`.
+/// Then, unless the scheme has a `+`, a `github.com` URL becomes `https` with a lowercase path,
+/// and a final `.git` is stripped. A URL without `://` is left as it is.
+fn canonical_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let mut scheme = scheme.to_ascii_lowercase();
+    let (authority, rest) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    let (path, suffix) = rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len()));
+    let (userinfo, mut host) = match authority.rsplit_once('@') {
+        Some((userinfo, host)) => (Some(userinfo), host.to_string()),
+        None => (None, authority.to_string()),
+    };
+    // Only an `http` or `https` URL has a host that the `url` crate parses, so only its case
+    // and default port go.
+    let special = |scheme: &str, host: &mut String| {
+        let default_port = match scheme {
+            "http" => ":80",
+            "https" => ":443",
+            _ => return,
+        };
+        host.make_ascii_lowercase();
+        if let Some(name) = host.strip_suffix(default_port) {
+            *host = name.to_string();
+        }
+    };
+    special(&scheme, &mut host);
+    let mut path = path.strip_suffix('/').unwrap_or(path).to_string();
+    if !scheme.contains('+') {
+        if host.split(':').next() == Some("github.com") {
+            scheme = "https".to_string();
+            special(&scheme, &mut host);
+            path.make_ascii_lowercase();
+        }
+        if let Some(repo) = path.strip_suffix(".git") {
+            path = repo.to_string();
+        }
+    }
+    let userinfo = userinfo.map(|u| format!("{u}@")).unwrap_or_default();
+    format!("{scheme}://{userinfo}{host}{path}{suffix}")
 }
 
 fn str_field(table: &dyn TableLike, key: &str) -> Option<String> {
@@ -487,6 +531,48 @@ mod tests {
         ] {
             let err = parse_workspace(&fixture(name)).unwrap_err();
             assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_urls_compare_as_cargo_compares_sources() {
+        let same = [
+            (
+                "https://github.com/Foo/Bar",
+                "https://github.com/foo/bar.git/",
+            ),
+            (
+                "HTTPS://GitHub.com:443/Foo/Bar",
+                "https://github.com/foo/bar",
+            ),
+            ("git://github.com/Foo/Bar", "https://github.com/foo/bar"),
+            (
+                "https://GitLab.com/Foo/Bar.git",
+                "https://gitlab.com/Foo/Bar/",
+            ),
+            (
+                "sparse+https://example.com/index/",
+                "sparse+https://example.com/index",
+            ),
+        ];
+        let different = [
+            ("https://gitlab.com/Foo/Bar", "https://gitlab.com/foo/bar"),
+            ("git://GitHub.com/Foo/Bar", "https://github.com/foo/bar"),
+            (
+                "git+https://github.com/Foo/Bar",
+                "https://github.com/foo/bar",
+            ),
+            (
+                "https://gitlab.com/foo/bar.GIT",
+                "https://gitlab.com/foo/bar",
+            ),
+            ("http://example.com:8080/x", "http://example.com/x"),
+        ];
+        for (a, b) in same {
+            assert_eq!(canonical_url(a), canonical_url(b), "{a} and {b}");
+        }
+        for (a, b) in different {
+            assert_ne!(canonical_url(a), canonical_url(b), "{a} and {b}");
         }
     }
 
