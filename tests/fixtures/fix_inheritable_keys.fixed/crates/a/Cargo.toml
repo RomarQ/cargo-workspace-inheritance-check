@@ -10,6 +10,6 @@ serde1 = { workspace = true }
 log = { workspace = true }
 
 [dependencies.tokio]
-features = ["full"]
+features = ["full"] # all of it
 workspace = true
 default-features = true
