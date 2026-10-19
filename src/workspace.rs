@@ -244,9 +244,9 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
     let mut cargo = std::env::var_os("CARGO")
         .filter(|cargo| !cargo.is_empty())
         .map_or_else(|| PathBuf::from("cargo"), PathBuf::from);
-    // Cargo runs in the root, so a relative path must be resolved from here first. A bare name
-    // stays bare, for the lookup on PATH.
-    if cargo.components().count() > 1 {
+    // Cargo runs in the root, so resolve a path from here first. A bare name, with no
+    // separator, stays a lookup on PATH.
+    if cargo.to_string_lossy().contains(std::path::is_separator) {
         cargo = std::path::absolute(&cargo)
             .map_err(|e| format!("Failed to resolve CARGO `{}`: {e}", cargo.display()))?;
     }
