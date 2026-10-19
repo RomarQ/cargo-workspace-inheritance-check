@@ -500,44 +500,66 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
 }
 
 /// `url` in the form that cargo compares sources by, so two URLs are the same source when their
-/// forms are equal. As cargo's `CanonicalUrl` on a parsed URL, it lowercases the scheme, and the
-/// host of an `http` or `https` URL, and drops their default port. It strips one trailing `/`.
-/// Then, unless the scheme has a `+`, a `github.com` URL becomes `https` with a lowercase path,
-/// and a final `.git` is stripped. A URL without `://` is left as it is.
+/// forms are equal. It follows cargo's `CanonicalUrl` on a URL that the `url` crate parsed.
+///
+/// A special scheme (`http`, `https`, `ws`, `wss`, `ftp`, or `file`) reads `\` as `/`, has a
+/// lowercase host, and drops its default port. The scheme is always lowercase. One trailing `/`
+/// goes, unless the path is only `/`. Then, unless the scheme has a `+`, a `github.com` URL
+/// becomes `https` with a lowercase path, and a final `.git` goes. Cargo writes the shortened last
+/// segment back, so its `%` becomes `%25`. A URL without `://` stays as it is.
 fn canonical_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
     let mut scheme = scheme.to_ascii_lowercase();
+    let special = |scheme: &str| matches!(scheme, "http" | "https" | "ws" | "wss" | "ftp" | "file");
+    let rest = if special(&scheme) {
+        rest.replace('\\', "/")
+    } else {
+        rest.to_string()
+    };
     let (authority, rest) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
     let (path, suffix) = rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len()));
-    let (userinfo, mut host) = match authority.rsplit_once('@') {
-        Some((userinfo, host)) => (Some(userinfo), host.to_string()),
-        None => (None, authority.to_string()),
+    let (userinfo, host) = match authority.rsplit_once('@') {
+        Some((userinfo, host)) => (Some(userinfo), host),
+        None => (None, authority),
     };
-    // Only an `http` or `https` URL has a host that the `url` crate parses, so only its case
-    // and default port go.
-    let special = |scheme: &str, host: &mut String| {
-        let default_port = match scheme {
-            "http" => ":80",
-            "https" => ":443",
-            _ => return,
-        };
+    let mut host = host.to_string();
+    let mut path = path.to_string();
+    let parse = |scheme: &str, host: &mut String, path: &mut String| {
+        if !special(scheme) {
+            return;
+        }
         host.make_ascii_lowercase();
-        if let Some(name) = host.strip_suffix(default_port) {
+        let default_port = match scheme {
+            "http" | "ws" => ":80",
+            "https" | "wss" => ":443",
+            "ftp" => ":21",
+            _ => "",
+        };
+        if let Some(name) = host
+            .strip_suffix(default_port)
+            .filter(|_| !default_port.is_empty())
+        {
             *host = name.to_string();
         }
+        if path.is_empty() {
+            path.push('/');
+        }
     };
-    special(&scheme, &mut host);
-    let mut path = path.strip_suffix('/').unwrap_or(path).to_string();
+    parse(&scheme, &mut host, &mut path);
+    if path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
     if !scheme.contains('+') {
         if host.split(':').next() == Some("github.com") {
             scheme = "https".to_string();
-            special(&scheme, &mut host);
+            parse(&scheme, &mut host, &mut path);
             path.make_ascii_lowercase();
         }
         if let Some(repo) = path.strip_suffix(".git") {
-            path = repo.to_string();
+            let (dir, last) = repo.rsplit_once('/').unwrap_or(("", repo));
+            path = format!("{dir}/{}", last.replace('%', "%25"));
         }
     }
     let userinfo = userinfo.map(|u| format!("{u}@")).unwrap_or_default();
@@ -591,6 +613,13 @@ mod tests {
                 "sparse+https://example.com/index/",
                 "sparse+https://example.com/index",
             ),
+            ("ws://Example.com:80/x", "ws://example.com/x"),
+            ("ftp://github.com:21/Foo/Bar", "https://github.com/foo/bar"),
+            ("https://example.com", "https://example.com/"),
+            (
+                "https://example.com\\Org\\Repo",
+                "https://example.com/Org/Repo",
+            ),
         ];
         let different = [
             ("https://gitlab.com/Foo/Bar", "https://gitlab.com/foo/bar"),
@@ -604,6 +633,15 @@ mod tests {
                 "https://gitlab.com/foo/bar",
             ),
             ("http://example.com:8080/x", "http://example.com/x"),
+            (
+                "https://example.com/my%20repo",
+                "https://example.com/my%20repo.git",
+            ),
+            ("sparse+https://example.com", "sparse+https://example.com/"),
+            (
+                "https://example.com\\Org\\Repo",
+                "https://example.com/org/repo",
+            ),
         ];
         for (a, b) in same {
             assert_eq!(canonical_url(a), canonical_url(b), "{a} and {b}");
