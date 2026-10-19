@@ -103,8 +103,8 @@ pub enum DepSource {
     Registry(Registry),
     /// A local path, resolved against the directory of the manifest that declares it.
     Path { path: PathBuf, registry: Registry },
-    /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL is in
-    /// the form that cargo compares sources by.
+    /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
+    /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
     Git {
         url: String,
         branch: Option<String>,
@@ -121,7 +121,7 @@ pub enum Registry {
     CratesIo,
     /// An alternate registry by name, from `registry`.
     Named(String),
-    /// A registry by index URL, from `registry-index`, in the form that cargo compares.
+    /// A registry by index URL, from `registry-index`.
     Index(String),
 }
 
@@ -496,7 +496,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     }
     let t = item.as_table_like()?;
     let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
-        (Some(index), _) => Registry::Index(canonical_url(&index)),
+        (Some(index), _) => Registry::Index(index),
         (None, Some(name)) if name != "crates-io" => Registry::Named(name),
         (None, _) => Registry::CratesIo,
     };
@@ -505,8 +505,9 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         DepSource::Path { path, registry }
     } else if let Some(url) = str_field(t, "git") {
+        let url = url.strip_suffix('/').unwrap_or(&url);
         DepSource::Git {
-            url: canonical_url(&url),
+            url: url.strip_suffix(".git").unwrap_or(url).to_string(),
             branch: str_field(t, "branch"),
             tag: str_field(t, "tag"),
             rev: str_field(t, "rev"),
@@ -526,113 +527,6 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         default_features: default_features.unwrap_or(true),
         underscore_default_features: t.contains_key("default_features"),
     })
-}
-
-/// `url` in the form that cargo compares sources by, so two URLs are the same source when their
-/// forms are equal. A plain URL gets cargo's rules, as [`plain_canonical_url`] lists them. Any
-/// other URL stays as it is. Equal text is always the same source, so such a URL can only miss a
-/// match, never make a false one.
-fn canonical_url(url: &str) -> String {
-    plain_canonical_url(url).unwrap_or_else(|| url.to_string())
-}
-
-/// Cargo's form of a plain URL, from its `CanonicalUrl` on a URL that the `url` crate parsed.
-/// `None` for a URL that is not plain.
-///
-/// A plain URL is `scheme://[user@]host[:port][/path]`. Each part has only ASCII letters, digits,
-/// and some characters: `+.-` in the scheme, `._~-` in the user, `.-` in the host, and `._~-%` in a
-/// path segment. A `file` URL has no user, host, or port. A port has no leading zero. A path has no
-/// empty segment but a trailing `/`. It has no `.` or `..` segment, in any case, also not as
-/// `%2e` or before a `.git` that goes. Other URLs depend on more of the `url` crate's parsing
-/// rules. Cargo's form of a plain URL is plain too, so it never equals another URL as written.
-///
-/// The scheme is lowercase. A special scheme (`http`, `https`, `ws`, `wss`, `ftp`, or `file`) has
-/// a lowercase host and drops its default port. One trailing `/` goes, unless the path is only `/`.
-/// Then, unless the scheme has a `+`, a `github.com` URL becomes `https` with a lowercase path,
-/// and a final `.git` goes. Cargo writes the shortened last segment back, so its `%` becomes
-/// `%25`.
-fn plain_canonical_url(url: &str) -> Option<String> {
-    let (scheme, rest) = url.split_once("://")?;
-    let mut scheme = scheme.to_ascii_lowercase();
-    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let (user, host_port) = match authority.split_once('@') {
-        Some((user, host_port)) => (Some(user), host_port),
-        None => (None, authority),
-    };
-    let (host, port) = match host_port.split_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (host_port, None),
-    };
-    let plain = |text: &str, extra: &str| {
-        !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
-    };
-    let plain_segment = |segment: &str| {
-        plain(segment, "._~-%")
-            && !matches!(
-                segment.to_ascii_lowercase().as_str(),
-                "." | ".." | "..git" | "...git"
-            )
-            && !segment.to_ascii_lowercase().contains("%2e")
-    };
-    let segments: Vec<&str> = path.split('/').skip(1).collect();
-    // Only the last segment can be empty, as in one trailing `/`.
-    let plain_path = segments.iter().enumerate().all(|(i, segment)| {
-        (segment.is_empty() && i + 1 == segments.len()) || plain_segment(segment)
-    });
-    let plain_authority = if scheme == "file" {
-        authority.is_empty()
-    } else {
-        user.is_none_or(|user| plain(user, "._~-"))
-            && plain(host, ".-")
-            && port.is_none_or(|port| !port.starts_with('0') && port.parse::<u16>().is_ok())
-    };
-    let is_plain = scheme.starts_with(|c: char| c.is_ascii_lowercase())
-        && plain(&scheme, "+.-")
-        && plain_authority
-        && plain_path;
-    if !is_plain {
-        return None;
-    }
-    let mut host = host.to_string();
-    let mut port = port;
-    let mut path = path.to_string();
-    let parse = |scheme: &str, host: &mut String, port: &mut Option<&str>, path: &mut String| {
-        let default_port = match scheme {
-            "http" | "ws" => Some("80"),
-            "https" | "wss" => Some("443"),
-            "ftp" => Some("21"),
-            "file" => None,
-            _ => return,
-        };
-        host.make_ascii_lowercase();
-        if port.is_some() && *port == default_port {
-            *port = None;
-        }
-        if path.is_empty() {
-            path.push('/');
-        }
-    };
-    parse(&scheme, &mut host, &mut port, &mut path);
-    if path.len() > 1 && path.ends_with('/') {
-        path.pop();
-    }
-    if !scheme.contains('+') {
-        if host == "github.com" {
-            scheme = "https".to_string();
-            parse(&scheme, &mut host, &mut port, &mut path);
-            path.make_ascii_lowercase();
-        }
-        if let Some(repo) = path.strip_suffix(".git") {
-            let (dir, last) = repo.rsplit_once('/').unwrap_or(("", repo));
-            path = format!("{dir}/{}", last.replace('%', "%25"));
-        }
-    }
-    let user = user.map(|user| format!("{user}@")).unwrap_or_default();
-    let port = port.map(|port| format!(":{port}")).unwrap_or_default();
-    Some(format!("{scheme}://{user}{host}{port}{path}"))
 }
 
 /// `true` when the `[workspace]` table of `doc`, or its `dependencies`, is an inline table with a
@@ -725,74 +619,6 @@ mod tests {
         assert!(root_inline_comment(&inline.unwrap().doc));
         let plain = read_manifest(&fixture("fix_inline_workspace_root_package").join("Cargo.toml"));
         assert!(!root_inline_comment(&plain.unwrap().doc));
-    }
-
-    #[test]
-    fn test_urls_compare_as_cargo_compares_sources() {
-        let same = [
-            (
-                "https://github.com/Foo/Bar",
-                "https://github.com/foo/bar.git/",
-            ),
-            (
-                "HTTPS://GitHub.com:443/Foo/Bar",
-                "https://github.com/foo/bar",
-            ),
-            ("git://github.com/Foo/Bar", "https://github.com/foo/bar"),
-            (
-                "https://GitLab.com/Foo/Bar.git",
-                "https://gitlab.com/Foo/Bar/",
-            ),
-            (
-                "sparse+https://example.com/index/",
-                "sparse+https://example.com/index",
-            ),
-            ("ws://Example.com:80/x", "ws://example.com/x"),
-            ("ftp://github.com:21/Foo/Bar", "https://github.com/foo/bar"),
-            ("https://example.com", "https://example.com/"),
-            ("file:///repos/foo.git/", "file:///repos/foo"),
-        ];
-        let different = [
-            ("https://gitlab.com/Foo/Bar", "https://gitlab.com/foo/bar"),
-            ("git://GitHub.com/Foo/Bar", "https://github.com/foo/bar"),
-            (
-                "git+https://github.com/Foo/Bar",
-                "https://github.com/foo/bar",
-            ),
-            (
-                "https://gitlab.com/foo/bar.GIT",
-                "https://gitlab.com/foo/bar",
-            ),
-            ("http://example.com:8080/x", "http://example.com/x"),
-            (
-                "https://example.com/my%20repo",
-                "https://example.com/my%20repo.git",
-            ),
-            ("sparse+https://example.com", "sparse+https://example.com/"),
-            (
-                "https://example.com\\Org\\Repo",
-                "https://example.com/org/repo",
-            ),
-            (
-                "https://example.com/repo?a/b",
-                "https://example.com/repo?a\\b",
-            ),
-            ("file://C:/repo", "file://c:/repo"),
-            ("http://github.com:080/repo", "ssh://github.com:080/repo"),
-            (
-                "https://example.com/org/...git",
-                "https://example.com/org/..",
-            ),
-            ("https:///repo.git", "https:///repo"),
-            ("https://github.com//repo.git", "https://github.com//repo"),
-            ("https://github.com/Org/...GIT", "https://github.com/org/.."),
-        ];
-        for (a, b) in same {
-            assert_eq!(canonical_url(a), canonical_url(b), "{a} and {b}");
-        }
-        for (a, b) in different {
-            assert_ne!(canonical_url(a), canonical_url(b), "{a} and {b}");
-        }
     }
 
     #[test]
