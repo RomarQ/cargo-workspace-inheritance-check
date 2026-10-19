@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_promotion_hint_disables_default_features_when_a_crate_does() {
-        let found: Vec<_> = check("fix_promotion_default_features")
+        let found: Vec<_> = check("fix_keeps_resolution")
             .into_iter()
             .filter_map(|d| match d.kind {
                 DiagnosticKind::PromotionCandidate {
@@ -441,9 +441,15 @@ mod tests {
                 _ => None,
             })
             .collect();
+        let expected = [
+            ("ed25519-dalek", false),
+            ("my-crate", true),
+            ("rand", true),
+            ("winapi", true),
+        ];
         assert_eq!(
             found,
-            [("ed25519-dalek".into(), false), ("my-crate".into(), true)]
+            expected.map(|(key, default)| (key.to_string(), default))
         );
     }
 
