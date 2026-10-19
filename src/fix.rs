@@ -40,10 +40,16 @@ pub(crate) struct Edit {
 }
 
 impl Edit {
-    /// The entry that the edit writes, in its inline form. An entry in the
-    /// `[dependencies.serde]` form stays in that form, with the same keys.
-    pub(crate) fn entry(&self) -> InlineTable {
-        inherited_entry(&self.dep.entry, self.enable_default_features)
+    /// The entry that the edit writes, as one inline line for a message. The edit itself keeps
+    /// the `[dependencies.serde]` form of an entry, and the lines and comments of an array.
+    pub(crate) fn suggestion(&self) -> String {
+        let mut entry = inherited_entry(&self.dep.entry, self.enable_default_features);
+        for (_, value) in entry.iter_mut() {
+            if let Some(array) = value.as_array_mut() {
+                array.fmt();
+            }
+        }
+        entry.to_string()
     }
 }
 

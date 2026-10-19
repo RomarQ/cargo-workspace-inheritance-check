@@ -11,4 +11,6 @@ log = { version = "0.4", default-features = false }
 
 [dependencies.tokio]
 version = "1"
-features = ["full"] # all of it
+features = [
+    "full", # all of it
+] # needed

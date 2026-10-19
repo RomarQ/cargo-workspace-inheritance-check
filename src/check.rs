@@ -93,7 +93,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
                 workspace_version: workspace_version.clone(),
                 suggestion: match &blocker {
                     Some(blocker) => Err(blocker.clone()),
-                    None => Ok(rewrite.entry().to_string()),
+                    None => Ok(rewrite.suggestion()),
                 },
             },
             format!("`{key}` in {member} now uses workspace inheritance"),
