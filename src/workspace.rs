@@ -241,9 +241,15 @@ struct MetadataPackage {
 }
 
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
-    let cargo = std::env::var_os("CARGO")
+    let mut cargo = std::env::var_os("CARGO")
         .filter(|cargo| !cargo.is_empty())
-        .unwrap_or_else(|| "cargo".into());
+        .map_or_else(|| PathBuf::from("cargo"), PathBuf::from);
+    // Cargo runs in the root, so a relative path must be resolved from here first. A bare name
+    // stays bare, for the lookup on PATH.
+    if cargo.components().count() > 1 {
+        cargo = std::path::absolute(&cargo)
+            .map_err(|e| format!("Failed to resolve CARGO `{}`: {e}", cargo.display()))?;
+    }
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
     let output = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--offline", "--color", "never"])
@@ -251,12 +257,12 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
         .current_dir(root)
         .output()
         .map_err(|e| {
-            let cargo = cargo.to_string_lossy();
+            let cargo = cargo.display();
             let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
             if e.kind() == ErrorKind::NotFound {
                 message.push_str(
-                    ". The tool needs cargo: set CARGO to its absolute path, or unset CARGO and \
-                     put cargo on PATH",
+                    ". The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo \
+                     on PATH",
                 );
             }
             message

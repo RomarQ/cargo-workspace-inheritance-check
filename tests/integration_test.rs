@@ -116,13 +116,31 @@ fn test_missing_cargo_says_how_to_provide_it() {
         assert!(!output.status.success());
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
-    let hint = "The tool needs cargo: set CARGO to its absolute path, or unset CARGO and put cargo on PATH";
+    let hint = "The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo on PATH";
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let stderr = with_cargo(&root.join("no-such-cargo"));
     assert!(stderr.contains(hint), "{stderr}");
     // A directory exists but cannot run: the hint is only for a missing cargo.
     let stderr = with_cargo(root);
     assert!(!stderr.contains(hint), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_relative_cargo_resolves_from_the_current_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("bin")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO"), tmp.path().join("bin/cargo")).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/valid_workspace");
+    let output = Command::new(BIN)
+        .arg("--path")
+        .arg(root)
+        .current_dir(tmp.path())
+        .env("CARGO", "bin/cargo")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
 }
 
 #[test]
