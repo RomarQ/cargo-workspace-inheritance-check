@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
+use toml_edit::{Decor, DocumentMut, InlineTable, Item, RawString, TableLike, Value};
 
 use crate::check::Finding;
 use crate::workspace::{Manifest, MemberDep, dep_table_mut, read_manifest, write_manifest};
@@ -179,6 +179,24 @@ fn inherited_entry(entry: &Item, enable_default_features: bool) -> InlineTable {
     inherited
 }
 
+/// `true` when `entry` is an inline table with a comment between its braces, which only TOML 1.1
+/// allows. The rewrite to one line would lose the comment.
+pub(crate) fn has_inline_comment(entry: &Item) -> bool {
+    let Some(table) = entry.as_inline_table() else {
+        return false;
+    };
+    let comment = |raw: Option<&RawString>| {
+        raw.and_then(RawString::as_str)
+            .is_some_and(|text| text.contains('#'))
+    };
+    let in_decor = |decor: &Decor| comment(decor.prefix()) || comment(decor.suffix());
+    comment(Some(table.trailing()))
+        || table.iter().any(|(name, value)| {
+            let key = table.key(name).expect("an entry has a key");
+            in_decor(key.leaf_decor()) || in_decor(key.dotted_decor()) || in_decor(value.decor())
+        })
+}
+
 /// Insert `promotion` into the root document. Returns `false` when the key already exists.
 fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<bool, String> {
     let no_workspace = "No [workspace] section in the root Cargo.toml";
@@ -297,6 +315,27 @@ mod tests {
             summary.skipped,
             ["log", "itoa", "ryu"]
                 .map(|key| format!("skipped: `{key}` in crates/b/Cargo.toml {reason}"))
+        );
+    }
+
+    #[test]
+    fn test_only_a_comment_between_inline_braces_blocks_the_rewrite() {
+        let manifest = read_manifest(&fixture("inline_comments").join("Cargo.toml")).unwrap();
+        let entries = manifest.doc["dependencies"].as_table_like().unwrap();
+        let found: Vec<_> = entries
+            .iter()
+            .map(|(key, entry)| (key, has_inline_comment(entry)))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("before_key", true),
+                ("after_comma", true),
+                ("before_brace", true),
+                ("multi_line", false),
+                ("in_array", false),
+                ("after_entry", false),
+            ]
         );
     }
 

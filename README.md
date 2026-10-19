@@ -118,6 +118,7 @@ cargo workspace-inheritance-check --fix
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
 - When the workspace entry has a `default_features` key and the member uses edition 2024 or later, the tool skips the entry. Cargo rejects that key in such a member, also in a workspace entry that the member inherits. To let the tool fix the entry, rename the key to `default-features`, or remove it when the entry also has `default-features`.
+- When an inline-table entry has a comment between its braces, which only TOML 1.1 allows, the tool skips the entry, or the promotion that would rewrite it. The rewrite puts the entry on one line, so the comment would be lost.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
 
 Each skip prints a `skipped:` line with the reason. After the fixes, the tool checks the workspace again and prints the report in the selected `--format`.

@@ -7,7 +7,7 @@ use std::path::Path;
 use toml_edit::{InlineTable, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
-use crate::fix::{Edit, Fix, Promotion};
+use crate::fix::{Edit, Fix, Promotion, has_inline_comment};
 use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
@@ -112,6 +112,9 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     };
     let fix = match blocker {
         Some(blocker) => Err(format!("`{key}` in {member} {blocker}")),
+        None if has_inline_comment(&dep.entry) => {
+            Err(format!("`{key}` in {member} {LOSES_COMMENT}"))
+        }
         None => Ok(Fix {
             promotion: None,
             edits: vec![rewrite],
@@ -125,6 +128,9 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     };
     Finding { diagnostic, fix }
 }
+
+/// Why `--fix` skips an entry that [`has_inline_comment`].
+const LOSES_COMMENT: &str = "has a comment inside its inline table, and `--fix` would lose it";
 
 /// Why `dep` cannot inherit `ws` as it is, as a clause after the entry's name: inheriting would
 /// change what cargo resolves, or cargo would reject the inherited entry.
@@ -175,6 +181,12 @@ fn promotion_fix(
             "`{key}` is not promoted, because no member gives a version"
         ));
     };
+    if let Some(dep) = usages.iter().find(|dep| has_inline_comment(&dep.entry)) {
+        return Err(format!(
+            "`{key}` is not promoted, because the entry in {} {LOSES_COMMENT}",
+            dep.member,
+        ));
+    }
     let value = dep_value(version, registry, default_features);
     let description = format!(
         "`{key} = {value}` added to [workspace.dependencies], updated: {}",
