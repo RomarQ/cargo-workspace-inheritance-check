@@ -107,8 +107,8 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
         ))
     } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
         Err(format!(
-            "`{key}` in {member} uses edition {}, so the workspace entry must spell \
-             `default_features` as `default-features`",
+            "`{key}` in {member} uses edition {}, so the workspace entry must use \
+             `default-features`, not `default_features`",
             dep.edition,
         ))
     } else {

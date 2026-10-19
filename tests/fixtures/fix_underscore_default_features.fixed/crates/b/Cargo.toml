@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 log = "0.4"
 itoa = "1"
+ryu = "1"
 serde = { workspace = true, default-features = true }

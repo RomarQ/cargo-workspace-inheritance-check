@@ -254,14 +254,12 @@ mod tests {
     #[test]
     fn test_fix_skips_a_workspace_spelling_that_the_member_edition_rejects() {
         let summary = fix("fix_underscore_default_features");
-        let reason = "uses edition 2024, so the workspace entry must spell `default_features` as \
-                      `default-features`";
+        let reason = "uses edition 2024, so the workspace entry must use `default-features`, not \
+                      `default_features`";
         assert_eq!(
             summary.skipped,
-            [
-                format!("skipped: `log` in crates/b/Cargo.toml {reason}"),
-                format!("skipped: `itoa` in crates/b/Cargo.toml {reason}"),
-            ]
+            ["log", "itoa", "ryu"]
+                .map(|key| format!("skipped: `{key}` in crates/b/Cargo.toml {reason}"))
         );
     }
 
