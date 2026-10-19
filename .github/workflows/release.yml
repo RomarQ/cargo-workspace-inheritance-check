@@ -154,9 +154,14 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -o pipefail
           MAJOR_TAG="v${VERSION%%.*}"
-          # A re-run of an older release keeps the tag on the newest release.
-          NEWEST=$(git ls-remote --tags --refs origin "refs/tags/${MAJOR_TAG}.*" | cut -f 2 | sed 's|^refs/tags/||' | sort -V | tail -n 1)
+          case "$VERSION" in
+            *-*) echo "v${VERSION} is a pre-release, so ${MAJOR_TAG} does not move"; exit 0 ;;
+          esac
+          # A re-run of an older release keeps the tag on the newest release. sort -V puts a
+          # pre-release after its release, so pre-release tags do not count.
+          NEWEST=$(git ls-remote --tags --refs origin "refs/tags/${MAJOR_TAG}.*" | cut -f 2 | sed 's|^refs/tags/||' | grep -v -- - | sort -V | tail -n 1)
           if [ "$NEWEST" != "v${VERSION}" ]; then
             echo "${NEWEST} is newer than v${VERSION}, so ${MAJOR_TAG} does not move"
             exit 0
