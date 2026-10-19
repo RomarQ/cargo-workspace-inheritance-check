@@ -430,9 +430,16 @@ mod tests {
     }
 
     #[test]
-    fn test_no_promotion_for_a_key_that_the_workspace_has_in_an_unusable_form() {
-        let diags = check("promotion_key_taken");
-        assert!(diags.is_empty(), "{diags:?}");
+    fn test_a_workspace_key_in_a_workspace_entry_is_ignored() {
+        assert_eq!(check("workspace_key_in_workspace_deps").len(), 4);
+        let no_version = Err("requires version 1, but the workspace entry has no version".into());
+        let inherited = Ok("{ workspace = true }".into());
+        let expected = [("itoa", &no_version), ("ryu", &inherited)].repeat(2);
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(key, suggestion)| (key.to_string(), suggestion.clone()))
+            .collect();
+        assert_eq!(suggestions("workspace_key_in_workspace_deps"), expected);
     }
 
     #[test]

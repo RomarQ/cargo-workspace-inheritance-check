@@ -18,9 +18,7 @@ pub struct WorkspaceInfo {
     /// The entries of `[workspace.dependencies]`, by key.
     pub workspace_deps: BTreeMap<String, DepSpec>,
     /// The member entries without `workspace = true` that no ignore rule covers, grouped by member
-    /// in manifest path order. Path and git entries that give no version are left out, and so are
-    /// the entries whose key `[workspace.dependencies]` has in a form that cargo cannot inherit,
-    /// such as `{ workspace = true }`.
+    /// in manifest path order. Path and git entries that give no version are left out.
     pub member_deps: Vec<MemberDep>,
 }
 
@@ -220,17 +218,13 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .and_then(Item::as_table_like)
         .ok_or_else(|| format!("No [workspace] section in {}", root_toml_path.display()))?;
 
-    let workspace_entries = workspace_table
+    let workspace_deps = workspace_table
         .get("dependencies")
-        .and_then(Item::as_table_like);
-    let workspace_deps: BTreeMap<String, DepSpec> = workspace_entries
+        .and_then(Item::as_table_like)
         .into_iter()
         .flat_map(|deps| deps.iter())
         .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, &root_dir)?)))
         .collect();
-    let unusable_key = |key: &str| {
-        !workspace_deps.contains_key(key) && workspace_entries.is_some_and(|e| e.contains_key(key))
-    };
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
     let mut metadata = cargo_metadata(path, &root_dir)?;
@@ -242,9 +236,7 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         member_deps.extend(parse_member(&metadata.workspace_root, package)?);
     }
     let root = &metadata.workspace_root;
-    member_deps.retain(|dep| {
-        !unusable_key(&dep.key) && !ignore_rules.iter().any(|rule| rule.matches(dep, root))
-    });
+    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep, root)));
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,
@@ -398,6 +390,9 @@ fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>,
     let mut deps = Vec::new();
     for (table, entries) in dep_tables(&doc) {
         for (key, item) in entries.iter() {
+            if item.get("workspace").and_then(Item::as_bool) == Some(true) {
+                continue;
+            }
             let Some(spec) = parse_spec(key, item, manifest_dir) else {
                 continue;
             };
@@ -453,8 +448,9 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
-/// entry with `workspace = true`, and for a value that is neither a string nor a table.
+/// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for a
+/// value that is neither a string nor a table. A `workspace` key is ignored, as cargo ignores it
+/// in `[workspace.dependencies]`.
 fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     if let Some(version) = item.as_str() {
         return Some(DepSpec {
@@ -466,9 +462,6 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         });
     }
     let t = item.as_table_like()?;
-    if t.get("workspace").and_then(Item::as_bool) == Some(true) {
-        return None;
-    }
     let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
         (Some(index), _) => Registry::Index(canonical_url(&index)),
         (None, Some(name)) if name != "crates-io" => Registry::Named(name),
