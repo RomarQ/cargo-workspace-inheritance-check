@@ -132,17 +132,33 @@ const DEP_KINDS: [&str; 5] = [
     "build_dependencies",
 ];
 
-pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))
+/// A parsed manifest, and the line ending that its file uses.
+pub(crate) struct Manifest {
+    pub doc: DocumentMut,
+    /// The first line of the file ends in `\r\n`.
+    crlf: bool,
 }
 
-pub(crate) fn write_manifest(path: &Path, doc: &DocumentMut) -> Result<(), String> {
-    std::fs::write(path, doc.to_string())
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+pub(crate) fn read_manifest(path: &Path) -> Result<Manifest, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let doc = content
+        .parse()
+        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
+    let crlf = content
+        .find('\n')
+        .is_some_and(|end| content[..end].ends_with('\r'));
+    Ok(Manifest { doc, crlf })
+}
+
+/// Write `manifest` to `path` with the line ending that its file used.
+pub(crate) fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
+    let mut text = manifest.doc.to_string();
+    if manifest.crlf {
+        // toml_edit writes `\n`, but a multi-line string keeps the `\r\n` that it read.
+        text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    std::fs::write(path, text).map_err(|e| format!("Failed to write {}: {e}", path.display()))
 }
 
 /// Every dependency table in a document, top-level and per target.
@@ -195,7 +211,7 @@ pub(crate) fn dep_table_mut<'a>(
 /// fails, when a manifest cannot be read or parsed, or when an ignore rule is invalid.
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
-    let doc = read_manifest(&root_toml_path)?;
+    let doc = read_manifest(&root_toml_path)?.doc;
 
     let workspace_table = doc
         .get("workspace")
@@ -332,7 +348,7 @@ fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
 
 fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>, String> {
     let manifest = package.manifest_path;
-    let doc = read_manifest(&manifest)?;
+    let doc = read_manifest(&manifest)?.doc;
     let manifest_dir = manifest
         .parent()
         .expect("a manifest path ends in Cargo.toml");

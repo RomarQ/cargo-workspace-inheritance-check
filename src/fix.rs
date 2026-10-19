@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
 
 use crate::check::Finding;
-use crate::workspace::{MemberDep, dep_table_mut, read_manifest, write_manifest};
+use crate::workspace::{Manifest, MemberDep, dep_table_mut, read_manifest, write_manifest};
 
 /// Keys that cargo reads on an entry with `workspace = true`. It ignores any other key with an
 /// "unused manifest key" warning, and `default-features` has its own rule in [`Edit`].
@@ -75,7 +75,7 @@ pub struct FixSummary {
 /// has an entry that a fix names. Files written before the error keep their changes.
 pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     let mut summary = FixSummary::default();
-    let mut root: Option<(&PathBuf, DocumentMut)> = None;
+    let mut root: Option<(&PathBuf, Manifest)> = None;
     let mut edits: BTreeMap<&PathBuf, Vec<&Edit>> = BTreeMap::new();
 
     for finding in findings {
@@ -88,11 +88,11 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
         };
         if let Some(promotion) = &fix.promotion {
             let path = &promotion.root_manifest;
-            let (_, doc) = match &mut root {
+            let (_, manifest) = match &mut root {
                 Some(loaded) => loaded,
                 None => root.insert((path, read_manifest(path)?)),
             };
-            if !insert_workspace_dep(doc, promotion)? {
+            if !insert_workspace_dep(&mut manifest.doc, promotion)? {
                 summary.skipped.push(format!(
                     "skipped: `{}` is not promoted, because [workspace.dependencies] already has it",
                     promotion.key,
@@ -107,15 +107,15 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     }
 
     let mut modified_files = BTreeSet::new();
-    if let Some((path, doc)) = &root {
-        write_manifest(path, doc)?;
+    if let Some((path, manifest)) = &root {
+        write_manifest(path, manifest)?;
         modified_files.insert(*path);
     }
     // The root manifest can also be a member, so it is read again after the promotions.
     for (manifest, file_edits) in edits {
-        let mut doc = read_manifest(manifest)?;
+        let mut parsed = read_manifest(manifest)?;
         for edit in file_edits {
-            let rewritten = dep_table_mut(&mut doc, &edit.dep.table).is_some_and(|table| {
+            let rewritten = dep_table_mut(&mut parsed.doc, &edit.dep.table).is_some_and(|table| {
                 rewrite_dep_entry(table, &edit.dep.key, edit.enable_default_features)
             });
             if !rewritten {
@@ -126,7 +126,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
                 ));
             }
         }
-        write_manifest(manifest, &doc)?;
+        write_manifest(manifest, &parsed)?;
         modified_files.insert(manifest);
     }
     summary.files_modified = modified_files.len();
@@ -215,7 +215,9 @@ fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<
 mod tests {
     use super::*;
     use crate::check::run_checks;
-    use crate::fixtures::{assert_fixed, fixture_copy};
+    use std::path::Path;
+
+    use crate::fixtures::{assert_fixed, fixture, fixture_copy};
     use crate::workspace::parse_workspace;
 
     /// Fix a copy of the fixture `name`, and assert that the copy matches `<name>.fixed`.
@@ -237,6 +239,24 @@ mod tests {
                 "fixed: `core` in crates/a/Cargo.toml now uses workspace inheritance",
             ]
         );
+    }
+
+    #[test]
+    fn test_fix_keeps_crlf_line_endings() {
+        let tmp = fixture_copy("fix_inheritable_keys");
+        let crlf = |path: &Path| std::fs::read_to_string(path).unwrap().replace('\n', "\r\n");
+        for manifest in [
+            "Cargo.toml",
+            "crates/a/Cargo.toml",
+            "crates/core/Cargo.toml",
+        ] {
+            let path = tmp.path().join(manifest);
+            std::fs::write(&path, crlf(&path)).unwrap();
+        }
+        apply_fixes(&run_checks(&parse_workspace(tmp.path()).unwrap(), 2)).unwrap();
+        let written = std::fs::read_to_string(tmp.path().join("crates/a/Cargo.toml")).unwrap();
+        let fixed = fixture("fix_inheritable_keys.fixed").join("crates/a/Cargo.toml");
+        assert_eq!(written, crlf(&fixed));
     }
 
     #[test]

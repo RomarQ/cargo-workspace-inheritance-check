@@ -2,6 +2,9 @@
 name = "a"
 version = "0.1.0"
 edition = "2021"
+description = """
+Two lines
+of text"""
 
 [dependencies]
 rand = "0.7" # pinned
