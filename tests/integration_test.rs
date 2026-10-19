@@ -99,7 +99,9 @@ fn test_problems_left_by_fix_fail_unless_no_fail() {
     let tmp = fixture_copy("fix_leaves_problems");
     let output = run(tmp.path(), &["--fix"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("skipped: `serde`"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("skipped: `serde`"), "{stderr}");
+    assert!(stderr.contains("no fixable issues found"), "{stderr}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.ends_with("1 error, 0 warnings found\n"), "{stdout}");
     assert!(run(tmp.path(), &["--fix", "--no-fail"]).status.success());
