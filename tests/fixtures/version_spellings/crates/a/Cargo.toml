@@ -10,8 +10,6 @@ zero = "0.0"
 rand = "0.8"
 lead = "1"
 tab = "1"
-pre = "1.0.0"
-multi = "^1, <1.5"
 itoa = "1.0"
 
 [dev-dependencies]

@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use semver::{Op, VersionReq};
 use toml_edit::{InlineTable, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
@@ -150,14 +149,6 @@ fn blocker(dep: &MemberDep, ws: &DepSpec) -> Option<String> {
         Some(format!(
             "requires version {version}, but the workspace entry has no version"
         ))
-    } else if let Some(version) = ws
-        .version
-        .as_ref()
-        .filter(|v| VersionReq::parse(v).is_err())
-    {
-        Some(format!(
-            "would inherit version `{version}`, which cargo rejects as a version requirement"
-        ))
     } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
         Some(format!(
             "uses edition {}, so the workspace entry must use `default-features`, not \
@@ -278,9 +269,9 @@ fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
     most.next().is_none().then(|| version.to_string())
 }
 
-/// `true` when `a` and `b` match the same versions. A caret requirement without a pre-release, such
-/// as `1`, `^1.0`, or `^1.*`, compares by its bounds. So `1` and `1.0` are the same, and `0` and
-/// `0.0` are not. Any other requirement compares as written.
+/// `true` when `a` and `b` match the same versions. A caret requirement with only numbers, such
+/// as `1` or `^1.0`, compares by its bounds. So `1` and `1.0` are the same, and `0` and `0.0` are
+/// not. Any other requirement compares as written.
 fn same_requirement(a: &str, b: &str) -> bool {
     match (caret_bounds(a), caret_bounds(b)) {
         (Some(a), Some(b)) => a == b,
@@ -288,18 +279,30 @@ fn same_requirement(a: &str, b: &str) -> bool {
     }
 }
 
-/// The lower bound and the excluded upper bound of a single caret requirement without a
-/// pre-release, by cargo's caret rules. Build metadata does not count. `None` for any other
-/// requirement, and for one that cargo rejects, such as `01`.
+/// The lower bound and the excluded upper bound of a caret requirement with only numbers, by
+/// cargo's caret rules. `None` for any other requirement, and for one that cargo rejects, such as
+/// `01`.
 fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
-    let parsed = VersionReq::parse(requirement).ok()?;
-    let [comparator] = &parsed.comparators[..] else {
-        return None;
+    let requirement = requirement.trim_matches(' ');
+    let version = requirement
+        .strip_prefix('^')
+        .unwrap_or(requirement)
+        .trim_start_matches(' ');
+    let number = |part: &str| {
+        let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let leading_zero = part.len() > 1 && part.starts_with('0');
+        (digits && !leading_zero).then(|| part.parse().ok())?
     };
-    if comparator.op != Op::Caret || !comparator.pre.is_empty() {
-        return None;
-    }
-    let (major, minor, patch) = (comparator.major, comparator.minor, comparator.patch);
+    let parts = version
+        .split('.')
+        .map(number)
+        .collect::<Option<Vec<u64>>>()?;
+    let (major, minor, patch) = match parts[..] {
+        [major] => (major, None, None),
+        [major, minor] => (major, Some(minor), None),
+        [major, minor, patch] => (major, Some(minor), Some(patch)),
+        _ => return None,
+    };
     let upper = match (major, minor, patch) {
         (0, Some(0), Some(patch)) => [0, 0, patch.checked_add(1)?],
         (0, Some(minor), _) => [0, minor.checked_add(1)?, 0],
@@ -423,10 +426,8 @@ mod tests {
             ("log", "not-inherited", true),
             ("zero", "mismatch", true),
             ("rand", "mismatch", true),
-            ("lead", "mismatch", false),
-            ("tab", "mismatch", false),
-            ("pre", "mismatch", true),
-            ("multi", "mismatch", true),
+            ("lead", "mismatch", true),
+            ("tab", "mismatch", true),
             (
                 "itoa",
                 "promotion Some(\"1\") writes Some(\"\\\"1\\\"\")",

@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 - `--fix` checks the workspace again after the fixes, prints that report in the selected `--format`, and exits 1 when errors remain, unless `--no-fail` is set.
 - An invalid ignore rule, including one with an unknown key or an empty `member`, is an error. A rule's `dependency` matches the key or the package name. `member` accepts a leading `./`, `.` covers every crate, and a manifest path such as `Cargo.toml` covers only that crate.
 - An ignore rule's `member` is a path from the workspace root, and an absolute path works too. So `member = ".."` covers every crate below the parent directory of the root, including the crates inside the root. In 1.3.0 it covered every crate that the tool named with a leading `../`, and no crate inside the root. To keep that scope, write one rule for each directory outside the root, such as `../shared`.
-- A caret requirement without a pre-release is compared by the versions it matches, and its build metadata is ignored. So `"1"` and `"1.0"` are not a version mismatch. A promotion accepts members that write the same requirement in different ways. Any other requirement is compared as written.
+- A version requirement with only numbers and an optional `^` is compared by the versions it matches. So `"1"` and `"1.0"` are not a version mismatch. A promotion accepts members that write the same requirement in different ways. Any other requirement is compared as written.
 - `--path` can be a directory inside the workspace, as for cargo's own commands. The tool then checks the whole workspace, and `--fix` fixes the whole workspace.
 - `--promotion-threshold 0` is rejected.
 - toml_edit 0.25 reads TOML 1.1 manifests. The minimum supported Rust version is 1.88.
@@ -30,7 +30,6 @@ All notable changes to this project will be documented in this file.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - `--fix` keeps the CRLF line endings of a manifest where most lines end in CRLF, unless a multi-line string holds a bare LF.
-- `--fix` skips an entry when the workspace entry gives a version that cargo rejects, such as `"01"`. Before, it wrote an inherited entry that cargo rejects.
 - `--fix` skips an inline-table entry with a comment between its braces, because the rewrite to one line would lose the comment. Only TOML 1.1 allows such a comment. It also skips a promotion into an inline root table with such a comment. In the `[dependencies.serde]` form, the comments of a removed key go to the `workspace = true` line.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
