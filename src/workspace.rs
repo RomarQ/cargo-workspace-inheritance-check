@@ -268,11 +268,12 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
             message
         })?;
     if !output.status.success() {
-        return Err(format!(
-            "cargo metadata failed for {}:\n{}",
-            root.display(),
-            String::from_utf8_lossy(&output.stderr).trim_end(),
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let root = root.display();
+        return Err(match stderr.trim_end() {
+            "" => format!("cargo metadata failed for {root} with {}", output.status),
+            stderr => format!("cargo metadata failed for {root}:\n{stderr}"),
+        });
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("Failed to read cargo metadata output: {e}"))

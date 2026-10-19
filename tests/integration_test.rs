@@ -143,6 +143,18 @@ fn test_relative_cargo_resolves_from_the_current_directory() {
     assert!(output.status.success(), "{stderr}");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_cargo_failure_without_output_gives_the_exit_status() {
+    let output = Command::new(BIN)
+        .args(["--path", "tests/fixtures/valid_workspace"])
+        .env("CARGO", "false")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.ends_with("with exit status: 1\n"), "{stderr}");
+}
+
 #[test]
 fn test_empty_cargo_uses_cargo_on_path() {
     let output = Command::new(BIN)
