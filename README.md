@@ -44,7 +44,7 @@ By default, this is reported as a **warning** and does not cause the tool to exi
 
 ### How entries are compared
 
-- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo.
+- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo. It runs the cargo in `CARGO`, which cargo sets when you run `cargo workspace-inheritance-check`, or else `cargo` on `PATH`. An empty `CARGO` counts as unset.
 - Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. A path or git entry must also name the same `registry` or `registry-index`, because `cargo publish` writes that registry for the dependency. As in cargo, a git URL matches with or without a trailing `/` or `.git`, and `registry = "crates-io"` is crates.io. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
 - Versions are compared as written, so `"1"` and `"1.0"` count as a version mismatch.
 - A path or git dependency without a version is not checked.
@@ -108,6 +108,7 @@ cargo workspace-inheritance-check --fix
 - When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
+- When the workspace entry has a `default_features` key and the member uses edition 2024 or later, the tool skips the entry. Cargo rejects that key in such a member, also in a workspace entry that the member inherits. To let the tool fix the entry, rename the key to `default-features`, or remove it when the entry also has `default-features`.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
 
 Each skip prints a `skipped:` line with the reason. After the fixes, the tool checks the workspace again and prints the report in the selected `--format`.
@@ -138,7 +139,7 @@ ignore = [
 
 Ignored dependencies are skipped in both reporting and fixing.
 
-`dependency` matches the dependency key or the package name. `member` is relative to the workspace root. It is a crate directory, which also covers the crates below that directory, or a manifest path. So `member = "."` covers every crate, and `member = "Cargo.toml"` covers only the root package. The `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables form works too. An invalid rule, such as one without a string `dependency` or with an unknown key, is an error.
+`dependency` matches the dependency key or the package name. `member` is a path from the workspace root, and can use `..` for a crate outside the root, such as `member = "../shared"`. An absolute path works too. It is a directory, which covers the crates below it, or a manifest path. So `member = "."` covers every crate, and `member = "Cargo.toml"` covers only the root package. The `[[workspace.metadata.inheritance-check.ignore]]` array-of-tables form works too. An invalid rule, such as one without a string `dependency`, with an unknown key, or with an empty `member`, is an error.
 
 ## JSON Output
 

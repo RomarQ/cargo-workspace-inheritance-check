@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+log = { version = "0.4", default_features = false }
+itoa = { version = "1", default-features = false, default_features = false }
+serde = { version = "1.0", default-features = false }
+ryu = { version = "1", default_features = true }

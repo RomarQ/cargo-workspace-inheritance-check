@@ -2,6 +2,7 @@
 //! dependency entries that each member declares.
 
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
@@ -22,28 +23,26 @@ pub struct WorkspaceInfo {
 
 /// Exemption declared in `[workspace.metadata.inheritance-check]`.
 ///
-/// `dependency` matches the dependency key or the package name. `member` is relative to the
-/// workspace root. It is a crate directory (e.g. `crates/bar`), which also covers the crates
-/// below it, or a manifest path (e.g. `Cargo.toml` for the root package). `.` and `None` cover
-/// every member.
+/// `dependency` matches the dependency key or the package name. `member` is a path from the
+/// workspace root, and can use `..` for a member outside it. An absolute path works too. It is a
+/// directory (e.g. `crates/bar`), which covers the crates below it, or a manifest path (e.g.
+/// `Cargo.toml` for the root package). `.` and `None` cover every member, also one outside the
+/// root.
 struct IgnoreRule {
     dependency: String,
     member: Option<String>,
 }
 
 impl IgnoreRule {
-    fn matches(&self, dep: &MemberDep) -> bool {
+    fn matches(&self, dep: &MemberDep, root: &Path) -> bool {
         if self.dependency != dep.key && self.dependency != dep.spec.package {
             return false;
         }
-        let scope = self.member.as_deref().unwrap_or(".").replace('\\', "/");
-        let scope = scope.trim_start_matches("./").trim_end_matches('/');
-        if scope.is_empty() || scope == "." {
+        let Some(member) = &self.member else {
             return true;
-        }
-        dep.member
-            .strip_prefix(scope)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        let scope = normalize(&root.join(member.replace('\\', "/")));
+        scope == root || dep.manifest.starts_with(scope)
     }
 }
 
@@ -52,8 +51,12 @@ impl IgnoreRule {
 pub struct MemberDep {
     pub manifest: PathBuf,
     /// The manifest path relative to the workspace root, such as `../outside/Cargo.toml` for a
-    /// member outside it, with `/` separators on every OS.
+    /// member outside it, with `/` separators on every OS. A member on another Windows drive
+    /// keeps its absolute path.
     pub member: String,
+    /// The member's edition, such as `2021`, as cargo reports it. Editions are years, so they
+    /// compare in order as text.
+    pub edition: String,
     pub table: DepTable,
     pub key: String,
     pub spec: DepSpec,
@@ -79,6 +82,9 @@ pub struct DepSpec {
     pub version: Option<String>,
     /// The `default-features` value, which is `true` when the entry does not set it.
     pub default_features: bool,
+    /// `true` when the entry has a `default_features` key. Cargo rejects that spelling in a
+    /// package on edition 2024 or later, also on an entry that the package inherits.
+    pub underscore_default_features: bool,
 }
 
 /// Where a dependency comes from.
@@ -176,8 +182,8 @@ pub(crate) fn dep_table_mut<'a>(
 /// Parse the workspace whose root manifest is `path/Cargo.toml`.
 ///
 /// Cargo decides the member set: this runs `cargo metadata --no-deps` in `path`, with the
-/// cargo from the `CARGO` environment variable that cargo sets for subcommands, or else the
-/// `cargo` on `PATH`.
+/// cargo from the `CARGO` environment variable that cargo sets for subcommands when it is not
+/// empty, or else the `cargo` on `PATH`.
 ///
 /// # Errors
 ///
@@ -206,10 +212,11 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .packages
         .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
     let mut member_deps = Vec::new();
-    for MetadataPackage { manifest_path } in metadata.packages {
-        member_deps.extend(parse_member(&metadata.workspace_root, manifest_path)?);
+    for package in metadata.packages {
+        member_deps.extend(parse_member(&metadata.workspace_root, package)?);
     }
-    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep)));
+    let root = &metadata.workspace_root;
+    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep, root)));
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,
@@ -228,17 +235,30 @@ struct Metadata {
 #[derive(Deserialize)]
 struct MetadataPackage {
     manifest_path: PathBuf,
+    edition: String,
 }
 
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = std::env::var_os("CARGO")
+        .filter(|cargo| !cargo.is_empty())
+        .unwrap_or_else(|| "cargo".into());
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
-    let output = Command::new(cargo)
+    let output = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--offline", "--color", "never"])
         .args(["--format-version", "1", "--manifest-path", "Cargo.toml"])
         .current_dir(root)
         .output()
-        .map_err(|e| format!("Failed to run cargo metadata: {e}"))?;
+        .map_err(|e| {
+            let cargo = cargo.to_string_lossy();
+            let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
+            if e.kind() == ErrorKind::NotFound {
+                message.push_str(
+                    ". The tool needs cargo: set CARGO to its absolute path, or unset CARGO and \
+                     put cargo on PATH",
+                );
+            }
+            message
+        })?;
     if !output.status.success() {
         return Err(format!(
             "cargo metadata failed for {}:\n{}",
@@ -268,27 +288,33 @@ fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, Stri
     };
     rules.ok_or_else(|| {
         "Invalid `ignore` in [workspace.metadata.inheritance-check]: expected an array of \
-         `{ dependency = \"...\", member = \"...\" }` entries, where `member` is optional"
+         `{ dependency = \"...\", member = \"...\" }` entries, where `member` is optional and \
+         not empty"
             .to_string()
     })
 }
 
 fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
-    // An unknown key, such as a misspelled `member`, or a value that is not a string makes the
-    // rule invalid, so a mistake never widens it to every crate.
+    // An unknown key, a value that is not a string, or an empty `member` makes the rule invalid.
+    // So a mistake, such as a misspelled `member`, never widens the rule to every crate.
     if !table
         .iter()
         .all(|(key, value)| matches!(key, "dependency" | "member") && value.is_str())
     {
         return None;
     }
+    let member = str_field(table, "member");
+    if member.as_deref() == Some("") {
+        return None;
+    }
     Some(IgnoreRule {
         dependency: str_field(table, "dependency")?,
-        member: str_field(table, "member"),
+        member,
     })
 }
 
-fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String> {
+fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>, String> {
+    let manifest = package.manifest_path;
     let doc = read_manifest(&manifest)?;
     let manifest_dir = manifest
         .parent()
@@ -309,6 +335,7 @@ fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String
             deps.push(MemberDep {
                 manifest: manifest.clone(),
                 member: member.clone(),
+                edition: package.edition.clone(),
                 table: table.clone(),
                 key: key.to_string(),
                 spec,
@@ -336,6 +363,22 @@ fn relative_to(path: &Path, base: &Path) -> PathBuf {
         .collect()
 }
 
+/// Resolve `.` and `..` in `path` without reading the file system, as cargo does for the paths
+/// it reports.
+fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            part => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 /// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
 /// entry with `workspace = true`, and for a value that is neither a string nor a table.
 fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
@@ -345,6 +388,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
             source: DepSource::Registry(Registry::CratesIo),
             version: Some(version.to_string()),
             default_features: true,
+            underscore_default_features: false,
         });
     }
     let t = item.as_table_like()?;
@@ -381,6 +425,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         source,
         version: str_field(t, "version"),
         default_features: default_features.unwrap_or(true),
+        underscore_default_features: t.contains_key("default_features"),
     })
 }
 
@@ -401,15 +446,19 @@ mod tests {
 
     #[test]
     fn test_invalid_ignore_rule_is_an_error() {
-        for name in ["ignore_member_not_a_string", "ignore_unknown_key"] {
+        for name in [
+            "ignore_member_not_a_string",
+            "ignore_member_empty",
+            "ignore_unknown_key",
+        ] {
             let err = parse_workspace(&fixture(name)).unwrap_err();
             assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
         }
     }
 
     #[test]
-    fn test_member_outside_the_root_is_named_and_ignored_from_the_root() {
-        let ws = parse_workspace(&fixture("outside_member/ws")).unwrap();
+    fn test_members_outside_the_root_are_named_and_ignored_from_the_root() {
+        let ws = parse_workspace(&fixture("outside_member/a/ws")).unwrap();
         let deps: Vec<_> = ws
             .member_deps
             .iter()
@@ -419,7 +468,9 @@ mod tests {
             deps,
             [
                 ("serde", "../outside/Cargo.toml"),
-                ("serde", "crates/a/Cargo.toml")
+                ("serde", "crates/a/Cargo.toml"),
+                ("log", "../../far/Cargo.toml"),
+                ("serde", "../../far/Cargo.toml"),
             ]
         );
     }

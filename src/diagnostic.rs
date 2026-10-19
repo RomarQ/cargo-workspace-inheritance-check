@@ -39,6 +39,11 @@ pub enum DiagnosticKind {
         /// The workspace entry's version requirement, if it gives one.
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace_version: Option<String>,
+        /// `true` when the member uses default features and the workspace entry disables them,
+        /// so the inherited entry must set `default-features = true`. The JSON output leaves it
+        /// out.
+        #[serde(skip)]
+        enable_default_features: bool,
     },
     /// Like [`Self::NotInherited`], but the member and the workspace entry give different
     /// versions.
@@ -82,10 +87,18 @@ impl Diagnostic {
         let dep = &self.dependency;
         let message = match &self.kind {
             DiagnosticKind::NotInherited {
-                version, member, ..
+                version,
+                member,
+                enable_default_features,
+                ..
             } => format!(
-                "`{dep} = \"{}\"` in {member} should use `{dep} = {{ workspace = true }}`",
+                "`{dep} = \"{}\"` in {member} should use `{dep} = {{ workspace = true{} }}`",
                 version.as_deref().unwrap_or("?"),
+                if *enable_default_features {
+                    ", default-features = true"
+                } else {
+                    ""
+                },
             ),
             DiagnosticKind::VersionMismatch {
                 version,
@@ -174,13 +187,14 @@ mod tests {
     /// A report with each kind of diagnostic, with and without the optional fields that the
     /// check can leave out.
     fn report() -> DiagnosticReport {
-        let not_inherited = |workspace_version: Option<&str>| Diagnostic {
+        let not_inherited = |workspace_version: Option<&str>, enable_default_features| Diagnostic {
             severity: Severity::Error,
             dependency: "lru".into(),
             kind: DiagnosticKind::NotInherited {
                 version: Some("0.11".into()),
                 member: "crates/crypto/Cargo.toml".into(),
                 workspace_version: workspace_version.map(String::from),
+                enable_default_features,
             },
         };
         let promotion = |version: Option<&str>, registry: Option<&str>| Diagnostic {
@@ -194,8 +208,8 @@ mod tests {
             },
         };
         DiagnosticReport::new(vec![
-            not_inherited(Some("0.12")),
-            not_inherited(None),
+            not_inherited(Some("0.12"), false),
+            not_inherited(None, true),
             Diagnostic {
                 severity: Severity::Error,
                 dependency: "rand".into(),
@@ -217,7 +231,7 @@ mod tests {
             "error: `lru = \"0.11\"` in crates/crypto/Cargo.toml should use \
              `lru = { workspace = true }`\n\n\
              error: `lru = \"0.11\"` in crates/crypto/Cargo.toml should use \
-             `lru = { workspace = true }`\n\n\
+             `lru = { workspace = true, default-features = true }`\n\n\
              error: `rand = \"0.7\"` in crates/utils/Cargo.toml has a different version than \
              workspace `rand = \"0.8\"`\n\n\
              warning: `serde_yaml` appears in 1 crate but is not in [workspace.dependencies]\n  \

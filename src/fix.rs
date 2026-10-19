@@ -252,6 +252,18 @@ mod tests {
     }
 
     #[test]
+    fn test_fix_skips_a_workspace_spelling_that_the_member_edition_rejects() {
+        let summary = fix("fix_underscore_default_features");
+        let reason = "uses edition 2024, so the workspace entry must use `default-features`, not \
+                      `default_features`";
+        assert_eq!(
+            summary.skipped,
+            ["log", "itoa", "ryu"]
+                .map(|key| format!("skipped: `{key}` in crates/b/Cargo.toml {reason}"))
+        );
+    }
+
+    #[test]
     fn test_fix_promotion_into_an_inline_workspace_of_a_root_package() {
         fix("fix_inline_workspace_root_package");
     }

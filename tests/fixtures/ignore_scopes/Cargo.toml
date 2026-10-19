@@ -9,7 +9,7 @@ serde = "1.0"
 ignore = [
   { dependency = "rand", member = "crates/bar" },
   { dependency = "rand", member = "./crates/baz/" },
-  { dependency = "serde", member = "crates/baz/Cargo.toml" },
+  { dependency = "serde", member = 'crates\baz\Cargo.toml' },
   { dependency = "openssl", member = "." },
   { dependency = "log" },
 ]

@@ -75,6 +75,7 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
 fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let key = &dep.key;
     let member = &dep.member;
+    let rewrite = edit(dep, ws.default_features);
     let (kind, description) = match (&dep.spec.version, &ws.version) {
         (Some(from), Some(to)) if from != to => (
             DiagnosticKind::VersionMismatch {
@@ -89,6 +90,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
                 version: version.clone(),
                 member: member.clone(),
                 workspace_version: workspace_version.clone(),
+                enable_default_features: rewrite.enable_default_features,
             },
             format!("`{key}` in {member} now uses workspace inheritance"),
         ),
@@ -103,10 +105,16 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
             "`{key}` in {member} requires version {version}, but the workspace entry has \
              no version"
         ))
+    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
+        Err(format!(
+            "`{key}` in {member} uses edition {}, so the workspace entry must use \
+             `default-features`, not `default_features`",
+            dep.edition,
+        ))
     } else {
         Ok(Fix {
             promotion: None,
-            edits: vec![edit(dep, ws.default_features)],
+            edits: vec![rewrite],
             description,
         })
     };
@@ -290,6 +298,30 @@ mod tests {
                 ("my-crate", 2, Some("1.0"), Some("my-registry")),
                 ("rand", 3, Some("0.9"), None),
             ]
+        );
+    }
+
+    #[test]
+    fn test_not_inherited_names_default_features_only_where_the_member_needs_them() {
+        let found: Vec<_> = check("fix_inheritable_keys")
+            .into_iter()
+            .filter_map(|d| match d.kind {
+                DiagnosticKind::NotInherited {
+                    enable_default_features,
+                    ..
+                } => Some((d.dependency, enable_default_features)),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            ("core", false),
+            ("serde1", false),
+            ("log", false),
+            ("tokio", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(key, enable)| (key.to_string(), enable))
         );
     }
 

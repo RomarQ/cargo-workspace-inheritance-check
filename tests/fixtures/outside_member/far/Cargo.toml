@@ -1,0 +1,10 @@
+[package]
+name = "far"
+version = "0.1.0"
+edition = "2021"
+workspace = "../a/ws"
+
+[dependencies]
+itoa = "1.0"
+log = "0.4"
+serde = "1.0"
