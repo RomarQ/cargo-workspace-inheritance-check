@@ -108,6 +108,7 @@ cargo workspace-inheritance-check --fix
 - When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
+- When the workspace entry spells the key `default_features` and the member uses edition 2024 or later, the tool skips the entry. Cargo rejects that spelling in such a member, also in a workspace entry that the member inherits. To let the tool fix the entry, rename the key to `default-features`.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
 
 Each skip prints a `skipped:` line with the reason. After the fixes, the tool checks the workspace again and prints the report in the selected `--format`.

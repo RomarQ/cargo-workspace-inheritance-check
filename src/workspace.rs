@@ -54,6 +54,9 @@ pub struct MemberDep {
     /// member outside it, with `/` separators on every OS. A member on another Windows drive
     /// keeps its absolute path.
     pub member: String,
+    /// The member's edition, such as `2021`, as cargo reports it. Editions are years, so they
+    /// compare in order as text.
+    pub edition: String,
     pub table: DepTable,
     pub key: String,
     pub spec: DepSpec,
@@ -79,6 +82,9 @@ pub struct DepSpec {
     pub version: Option<String>,
     /// The `default-features` value, which is `true` when the entry does not set it.
     pub default_features: bool,
+    /// `true` when the entry has a `default_features` key. Cargo rejects that spelling in a
+    /// package on edition 2024 or later, also on an entry that the package inherits.
+    pub underscore_default_features: bool,
 }
 
 /// Where a dependency comes from.
@@ -206,8 +212,8 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .packages
         .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
     let mut member_deps = Vec::new();
-    for MetadataPackage { manifest_path } in metadata.packages {
-        member_deps.extend(parse_member(&metadata.workspace_root, manifest_path)?);
+    for package in metadata.packages {
+        member_deps.extend(parse_member(&metadata.workspace_root, package)?);
     }
     let root = &metadata.workspace_root;
     member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep, root)));
@@ -229,6 +235,7 @@ struct Metadata {
 #[derive(Deserialize)]
 struct MetadataPackage {
     manifest_path: PathBuf,
+    edition: String,
 }
 
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
@@ -306,7 +313,8 @@ fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
     })
 }
 
-fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String> {
+fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>, String> {
+    let manifest = package.manifest_path;
     let doc = read_manifest(&manifest)?;
     let manifest_dir = manifest
         .parent()
@@ -327,6 +335,7 @@ fn parse_member(root: &Path, manifest: PathBuf) -> Result<Vec<MemberDep>, String
             deps.push(MemberDep {
                 manifest: manifest.clone(),
                 member: member.clone(),
+                edition: package.edition.clone(),
                 table: table.clone(),
                 key: key.to_string(),
                 spec,
@@ -379,6 +388,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
             source: DepSource::Registry(Registry::CratesIo),
             version: Some(version.to_string()),
             default_features: true,
+            underscore_default_features: false,
         });
     }
     let t = item.as_table_like()?;
@@ -415,6 +425,7 @@ fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
         source,
         version: str_field(t, "version"),
         default_features: default_features.unwrap_or(true),
+        underscore_default_features: t.contains_key("default_features"),
     })
 }
 

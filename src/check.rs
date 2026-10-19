@@ -105,6 +105,12 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
             "`{key}` in {member} requires version {version}, but the workspace entry has \
              no version"
         ))
+    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
+        Err(format!(
+            "`{key}` in {member} uses edition {}, so the workspace entry must spell \
+             `default_features` as `default-features`",
+            dep.edition,
+        ))
     } else {
         Ok(Fix {
             promotion: None,

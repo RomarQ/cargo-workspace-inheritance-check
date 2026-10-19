@@ -23,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - `--fix` writes `default-features = true` where the member uses default features and the workspace entry disables them. The not-inherited error also shows this key. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
+- `--fix` skips an entry of a member on edition 2024 or later when the workspace entry spells the key `default_features`. Before, it wrote an inherited entry that cargo rejects.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
 - `--path ./x` gives member paths relative to the workspace root.
 - The promotion warning for one crate says `appears in 1 crate`.
