@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
@@ -216,7 +215,7 @@ pub(crate) fn dep_table_mut<'a>(
 /// the root above `path`, as for cargo's own commands. Cargo decides the member set: this runs
 /// `cargo metadata --no-deps` in `path` for the root manifest, so cargo reads each
 /// `.cargo/config.toml` from `path` up. The cargo is the one in the `CARGO` environment variable
-/// that cargo sets for subcommands, when it is not empty, or else `cargo` on `PATH`.
+/// that cargo sets for subcommands, or else `cargo` on `PATH`.
 ///
 /// # Errors
 ///
@@ -316,38 +315,25 @@ fn cargo_metadata(dir: &Path, root: &Path) -> Result<Metadata, String> {
 
 /// Run `cargo <subcommand> <args>` in `dir`, and return what it prints on stdout.
 fn run_cargo(dir: &Path, subcommand: &str, args: &[&OsStr]) -> Result<Vec<u8>, String> {
-    let mut cargo = std::env::var_os("CARGO")
-        .filter(|cargo| !cargo.is_empty())
-        .map_or_else(|| PathBuf::from("cargo"), PathBuf::from);
-    // Cargo runs in `dir`, so resolve a relative path from here first. A bare name, with no
-    // separator, stays a lookup on PATH.
-    if cargo.to_string_lossy().contains(std::path::is_separator) {
-        cargo = std::path::absolute(&cargo)
-            .map_err(|e| format!("Failed to resolve CARGO `{}`: {e}", cargo.display()))?;
-    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .args(["--color", "never", subcommand])
         .args(args)
         .current_dir(dir)
         .output()
         .map_err(|e| {
-            let cargo = cargo.display();
-            let mut message = format!("Failed to run cargo {subcommand} with `{cargo}`: {e}");
-            if e.kind() == ErrorKind::NotFound {
-                message.push_str(
-                    ". The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo \
-                     on PATH",
-                );
-            }
-            message
+            format!(
+                "Failed to run cargo {subcommand} with `{}`: {e}. The tool needs cargo: set CARGO \
+                 to its absolute path, or unset CARGO and put cargo on PATH",
+                cargo.to_string_lossy(),
+            )
         })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let dir = dir.display();
-        return Err(match stderr.trim_end() {
-            "" => format!("cargo {subcommand} failed for {dir} with {}", output.status),
-            stderr => format!("cargo {subcommand} failed for {dir}:\n{stderr}"),
-        });
+        return Err(format!(
+            "cargo {subcommand} failed for {}:\n{}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim_end(),
+        ));
     }
     Ok(output.stdout)
 }

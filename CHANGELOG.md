@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
-- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`. An empty `CARGO` counts as unset. The tool resolves a relative `CARGO` path from the current directory, and looks up a bare name, such as `cargo-1.88`, on `PATH`.
+- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`.
 - A member outside the workspace root is named from the root, such as `../shared/Cargo.toml`, also when `members` gives its absolute path.
 - A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, path, or git). A path or git entry must also name the same `registry`. `registry = "crates-io"` is crates.io. For a renamed entry, the JSON `dependency` value is the key.
 - Renamed, path, and git dependencies are not promotion candidates. An entry with `registry-index`, which cargo writes only in a packaged manifest, is not checked. A promotion counts each crate once, and it gives no suggested version when two versions tie.
