@@ -76,7 +76,6 @@ pub struct FixSummary {
 pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     let mut summary = FixSummary::default();
     let mut root: Option<(&PathBuf, DocumentMut)> = None;
-    let mut root_changed = false;
     let mut edits: BTreeMap<&PathBuf, Vec<&Edit>> = BTreeMap::new();
 
     for finding in findings {
@@ -100,7 +99,6 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
                 ));
                 continue;
             }
-            root_changed = true;
         }
         for edit in &fix.edits {
             edits.entry(&edit.dep.manifest).or_default().push(edit);
@@ -109,9 +107,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     }
 
     let mut modified_files = BTreeSet::new();
-    if let Some((path, doc)) = &root
-        && root_changed
-    {
+    if let Some((path, doc)) = &root {
         write_manifest(path, doc)?;
         modified_files.insert(*path);
     }

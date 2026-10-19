@@ -320,6 +320,12 @@ mod tests {
     }
 
     #[test]
+    fn test_no_promotion_for_a_key_that_the_workspace_has_in_an_unusable_form() {
+        let diags = check("promotion_key_taken");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
     fn test_promotion_hint_disables_default_features_when_a_crate_does() {
         let found: Vec<_> = check("fix_promotion_default_features")
             .into_iter()

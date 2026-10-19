@@ -17,7 +17,9 @@ pub struct WorkspaceInfo {
     /// The entries of `[workspace.dependencies]`, by key.
     pub workspace_deps: BTreeMap<String, DepSpec>,
     /// The member entries without `workspace = true` that no ignore rule covers, grouped by member
-    /// in manifest path order. Path and git entries that give no version are left out.
+    /// in manifest path order. Path and git entries that give no version are left out, and so are
+    /// the entries whose key `[workspace.dependencies]` has in a form that cargo cannot inherit,
+    /// such as `{ workspace = true }`.
     pub member_deps: Vec<MemberDep>,
 }
 
@@ -200,13 +202,17 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         .and_then(Item::as_table_like)
         .ok_or_else(|| format!("No [workspace] section in {}", root_toml_path.display()))?;
 
-    let workspace_deps = workspace_table
+    let workspace_entries = workspace_table
         .get("dependencies")
-        .and_then(Item::as_table_like)
+        .and_then(Item::as_table_like);
+    let workspace_deps: BTreeMap<String, DepSpec> = workspace_entries
         .into_iter()
         .flat_map(|deps| deps.iter())
         .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, path)?)))
         .collect();
+    let unusable_key = |key: &str| {
+        !workspace_deps.contains_key(key) && workspace_entries.is_some_and(|e| e.contains_key(key))
+    };
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
     let mut metadata = cargo_metadata(path)?;
@@ -218,7 +224,9 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
         member_deps.extend(parse_member(&metadata.workspace_root, package)?);
     }
     let root = &metadata.workspace_root;
-    member_deps.retain(|dep| !ignore_rules.iter().any(|rule| rule.matches(dep, root)));
+    member_deps.retain(|dep| {
+        !unusable_key(&dep.key) && !ignore_rules.iter().any(|rule| rule.matches(dep, root))
+    });
 
     Ok(WorkspaceInfo {
         root_path: metadata.workspace_root,

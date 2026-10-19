@@ -23,6 +23,7 @@ All notable changes to this project will be documented in this file.
 - `--fix` writes `default-features = true` where the member uses default features and the workspace entry disables them. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
 - The not-inherited error suggests the entry that `--fix` writes. The entry keeps the `features`, `optional`, and `public` of the member entry, and adds `default-features = true` where the member needs it. When `--fix` skips the entry, the error gives the reason in a `hint:` line, not an entry.
 - The promotion hint adds `default-features = false` when a crate sets it, as `--fix` does.
+- A key that `[workspace.dependencies]` has in a form that cargo cannot inherit, such as `{ workspace = true }`, is not a promotion candidate.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
