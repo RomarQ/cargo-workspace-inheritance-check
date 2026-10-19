@@ -2,6 +2,9 @@
 name = "a"
 version = "0.1.0"
 edition = "2021"
+description = """
+Two lines
+of text"""
 
 [dependencies]
 rand = { workspace = true } # pinned
@@ -10,6 +13,8 @@ serde1 = { workspace = true }
 log = { workspace = true }
 
 [dependencies.tokio]
-features = ["full"]
+features = [
+    "full", # all of it
+] # needed
 workspace = true
 default-features = true

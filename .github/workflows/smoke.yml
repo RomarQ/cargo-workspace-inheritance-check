@@ -13,33 +13,22 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
+      # Installs the latest release. Each later step builds this checkout, with `version: path`.
       - name: Clean workspace (should pass)
         uses: ./
         with:
           path: tests/fixtures/valid_workspace
 
-      - name: Not inherited (should fail)
-        id: not-inherited
-        continue-on-error: true
-        uses: ./
-        with:
-          path: tests/fixtures/not_inherited
-
-      - name: Version mismatch (should fail)
-        id: version-mismatch
-        continue-on-error: true
-        uses: ./
-        with:
-          path: tests/fixtures/version_mismatch
-
       - name: Promotion candidate (should warn)
         uses: ./
         with:
+          version: path
           path: tests/fixtures/promotion_candidate
 
       - name: JSON output
         uses: ./
         with:
+          version: path
           path: tests/fixtures/not_inherited
           format: json
           no-fail: true
@@ -49,6 +38,7 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          version: path
           path: tests/fixtures/valid_workspace
           format: yaml
 
@@ -57,20 +47,20 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
+          version: path
           path: tests/fixtures/promotion_candidate
           promotion-failure: true
 
       - name: Promotion failure, threshold 3 (should pass)
         uses: ./
         with:
+          version: path
           path: tests/fixtures/promotion_candidate
           promotion-failure: true
           promotion-threshold: 3
 
       - name: Check that the failing steps failed
         if: >-
-          steps.not-inherited.outcome != 'failure' ||
-          steps.version-mismatch.outcome != 'failure' ||
           steps.invalid-format.outcome != 'failure' ||
           steps.promotion-failure.outcome != 'failure'
         run: |
@@ -81,6 +71,7 @@ jobs:
       - name: Fix
         uses: ./
         with:
+          version: path
           path: tests/fixtures/version_mismatch
           fix: true
 

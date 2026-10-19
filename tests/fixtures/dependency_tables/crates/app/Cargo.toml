@@ -6,9 +6,6 @@ edition = "2021"
 [dev-dependencies]
 serde = "1.0"
 
-[dev_dependencies]
-cc = "1.0"
-
 [build_dependencies]
 cc = "1.0"
 

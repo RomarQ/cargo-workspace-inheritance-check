@@ -3,3 +3,8 @@ members = ["crates/*"]
 
 [workspace.dependencies]
 serde = "1.0"
+log = "0.4"
+zero = "0"
+rand = "=0.8"
+lead = "01"
+tab = "1\t"

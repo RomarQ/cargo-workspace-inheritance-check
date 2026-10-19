@@ -20,6 +20,13 @@ A crate declares a dependency with an explicit version that already exists in `[
 error: `serde = "1.0"` in crates/foo/Cargo.toml should use `serde = { workspace = true }`
 ```
 
+The suggested entry is the entry that `--fix` writes. It keeps `features`, `optional`, and `public`, and it adds `default-features = true` when the member needs it. When the member cannot inherit the workspace entry as it is, the error gives the reason, not an entry:
+
+```
+error: `core = "0.1"` in crates/foo/Cargo.toml should inherit from [workspace.dependencies]
+  hint: it requires version 0.1, but the workspace entry has no version
+```
+
 ### 2. Version mismatch (error)
 
 A crate declares a dependency with a different version than what's in `[workspace.dependencies]`.
@@ -40,15 +47,17 @@ warning: `serde_yaml` appears in 3 crates but is not in [workspace.dependencies]
   hint: consider adding `serde_yaml = "0.9"` to [workspace.dependencies]
 ```
 
+The hint adds `default-features = false` when a crate sets it, as `--fix` does.
+
 By default, this is reported as a **warning** and does not cause the tool to exit with a non-zero code. Use `--promotion-failure` to treat promotion candidates as errors.
 
 ### How entries are compared
 
-- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root. The tool runs `cargo metadata --no-deps` to get them, so the workspace must load in cargo. It runs the cargo in `CARGO`, which cargo sets when you run `cargo workspace-inheritance-check`, or else `cargo` on `PATH`. An empty `CARGO` counts as unset.
-- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. A path or git entry must also name the same `registry` or `registry-index`, because `cargo publish` writes that registry for the dependency. As in cargo, a git URL matches with or without a trailing `/` or `.git`, and `registry = "crates-io"` is crates.io. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
-- Versions are compared as written, so `"1"` and `"1.0"` count as a version mismatch.
+- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root, so the workspace must load in cargo.
+- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
+- A version requirement with only numbers and an optional `^`, such as `"1"` or `"^1.0"`, is compared by the versions it matches. So `"1"` and `"1.0"` are the same requirement, and `"0"` and `"0.0"` are not. Any other requirement is compared as written.
 - A path or git dependency without a version is not checked.
-- A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A `registry-index`, path, or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
+- A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A path or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
 
 ## Installation
 
@@ -108,10 +117,9 @@ cargo workspace-inheritance-check --fix
 - When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
-- When the workspace entry has a `default_features` key and the member uses edition 2024 or later, the tool skips the entry. Cargo rejects that key in such a member, also in a workspace entry that the member inherits. To let the tool fix the entry, rename the key to `default-features`, or remove it when the entry also has `default-features`.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
 
-Each skip prints a `skipped:` line with the reason. After the fixes, the tool checks the workspace again and prints the report in the selected `--format`.
+Each skip prints a `skipped:` line with the reason.
 
 ## Exit Codes
 
@@ -191,7 +199,7 @@ All inputs are optional:
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
 | `fix` | Automatically fix reported problems | `false` |
-| `version` | Version to install | `latest` |
+| `version` | Version to install, or `path` to build the crate in the action's own directory. With `path`, the binary matches the action ref. | `latest` |
 
 ### Without the action
 
@@ -204,9 +212,7 @@ All inputs are optional:
 
 Dependencies that use [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry) are handled correctly:
 
-- A member dep like `serde = { version = "1.0", registry = "my-registry" }` will **not** match a workspace dep `serde = "1.0"` (default crates.io registry) — they are from different sources
-- Promotion candidates are grouped by name **and** registry — deps from different registries are never grouped together
-- `--fix` strips `registry` from member deps when converting to `{ workspace = true }` (the workspace dep owns the registry, just like it owns the version)
+- Promotion candidates are grouped by name **and** registry, so dependencies from different registries are never grouped together.
 - `--fix` carries `registry` into promoted workspace deps:
 
 ```
@@ -224,4 +230,4 @@ All dependency sections in member crates are checked:
 - `[dev-dependencies]`
 - `[build-dependencies]`
 - `[target.'...'.dependencies]` (and dev/build variants)
-- `[dev_dependencies]` and `[build_dependencies]`, the spellings that cargo accepts before edition 2024. Cargo ignores such a table when the hyphen spelling is also present, and so does the tool.
+- `[dev_dependencies]` and `[build_dependencies]`, the spellings that cargo accepts before edition 2024.

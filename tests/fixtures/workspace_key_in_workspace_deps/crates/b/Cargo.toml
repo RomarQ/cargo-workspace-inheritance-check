@@ -1,0 +1,8 @@
+[package]
+name = "b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+itoa = "1"
+ryu = "1"

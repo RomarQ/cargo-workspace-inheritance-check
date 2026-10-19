@@ -2,7 +2,6 @@
 //! dependency entries that each member declares.
 
 use std::collections::BTreeMap;
-use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
 
@@ -60,6 +59,8 @@ pub struct MemberDep {
     pub table: DepTable,
     pub key: String,
     pub spec: DepSpec,
+    /// The entry as the manifest writes it.
+    pub(crate) entry: Item,
 }
 
 /// A dependency table in a manifest, such as `[dependencies]` or
@@ -93,10 +94,13 @@ pub struct DepSpec {
 /// it, so two entries that differ only there are different dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepSource {
-    /// A dependency from a registry.
-    Registry(Registry),
+    /// A dependency from the registry that `registry` names, or from crates.io for `None`.
+    Registry(Option<String>),
     /// A local path, resolved against the directory of the manifest that declares it.
-    Path { path: PathBuf, registry: Registry },
+    Path {
+        path: PathBuf,
+        registry: Option<String>,
+    },
     /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
     /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
     Git {
@@ -104,19 +108,8 @@ pub enum DepSource {
         branch: Option<String>,
         tag: Option<String>,
         rev: Option<String>,
-        registry: Registry,
+        registry: Option<String>,
     },
-}
-
-/// The registry that an entry names with `registry` or `registry-index`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Registry {
-    /// crates.io, when the entry names no registry or names `crates-io`.
-    CratesIo,
-    /// An alternate registry by name, from `registry`.
-    Named(String),
-    /// A registry by index URL, from `registry-index`.
-    Index(String),
 }
 
 /// Dependency table names. Cargo accepts the underscore spellings before edition 2024.
@@ -128,17 +121,32 @@ const DEP_KINDS: [&str; 5] = [
     "build_dependencies",
 ];
 
-pub(crate) fn read_manifest(path: &Path) -> Result<DocumentMut, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    content
-        .parse()
-        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))
+/// A parsed manifest, and the line ending that its file uses.
+pub(crate) struct Manifest {
+    pub doc: DocumentMut,
+    /// Every line of the file ends in `\r\n`.
+    crlf: bool,
 }
 
-pub(crate) fn write_manifest(path: &Path, doc: &DocumentMut) -> Result<(), String> {
-    std::fs::write(path, doc.to_string())
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+pub(crate) fn read_manifest(path: &Path) -> Result<Manifest, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let doc = content
+        .parse()
+        .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
+    // Only when every line ends in `\r\n` does the conversion leave each string value as it is.
+    let crlf = content.contains("\r\n") && !content.replace("\r\n", "").contains('\n');
+    Ok(Manifest { doc, crlf })
+}
+
+/// Write `manifest` to `path` with the line ending that its file used.
+pub(crate) fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
+    let mut text = manifest.doc.to_string();
+    if manifest.crlf {
+        // toml_edit writes `\n`, but a multi-line string keeps the `\r\n` that it read.
+        text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    std::fs::write(path, text).map_err(|e| format!("Failed to write {}: {e}", path.display()))
 }
 
 /// Every dependency table in a document, top-level and per target.
@@ -153,10 +161,6 @@ fn dep_tables(doc: &DocumentMut) -> impl Iterator<Item = (DepTable, &dyn TableLi
         .chain(targets)
         .flat_map(|(target, scope)| {
             DEP_KINDS.into_iter().filter_map(move |kind| {
-                // Cargo ignores an underscore table when its hyphen spelling is in the same scope.
-                if kind.contains('_') && scope.contains_key(&kind.replace('_', "-")) {
-                    return None;
-                }
                 let table = scope.get(kind)?.as_table_like()?;
                 let target = target.map(String::from);
                 Some((DepTable { target, kind }, table))
@@ -182,8 +186,8 @@ pub(crate) fn dep_table_mut<'a>(
 /// Parse the workspace whose root manifest is `path/Cargo.toml`.
 ///
 /// Cargo decides the member set: this runs `cargo metadata --no-deps` in `path`, with the
-/// cargo from the `CARGO` environment variable that cargo sets for subcommands when it is not
-/// empty, or else the `cargo` on `PATH`.
+/// cargo from the `CARGO` environment variable that cargo sets for subcommands, or else the
+/// `cargo` on `PATH`.
 ///
 /// # Errors
 ///
@@ -191,7 +195,7 @@ pub(crate) fn dep_table_mut<'a>(
 /// fails, when a manifest cannot be read or parsed, or when an ignore rule is invalid.
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let root_toml_path = path.join("Cargo.toml");
-    let doc = read_manifest(&root_toml_path)?;
+    let doc = read_manifest(&root_toml_path)?.doc;
 
     let workspace_table = doc
         .get("workspace")
@@ -239,9 +243,7 @@ struct MetadataPackage {
 }
 
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
-    let cargo = std::env::var_os("CARGO")
-        .filter(|cargo| !cargo.is_empty())
-        .unwrap_or_else(|| "cargo".into());
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
     let output = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--offline", "--color", "never"])
@@ -249,15 +251,11 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
         .current_dir(root)
         .output()
         .map_err(|e| {
-            let cargo = cargo.to_string_lossy();
-            let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
-            if e.kind() == ErrorKind::NotFound {
-                message.push_str(
-                    ". The tool needs cargo: set CARGO to its absolute path, or unset CARGO and \
-                     put cargo on PATH",
-                );
-            }
-            message
+            format!(
+                "Failed to run cargo metadata with `{}`: {e}. The tool needs cargo: set CARGO to \
+                 its absolute path, or unset CARGO and put cargo on PATH",
+                cargo.to_string_lossy(),
+            )
         })?;
     if !output.status.success() {
         return Err(format!(
@@ -315,7 +313,7 @@ fn rule_from_table_like(table: &dyn TableLike) -> Option<IgnoreRule> {
 
 fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>, String> {
     let manifest = package.manifest_path;
-    let doc = read_manifest(&manifest)?;
+    let doc = read_manifest(&manifest)?.doc;
     let manifest_dir = manifest
         .parent()
         .expect("a manifest path ends in Cargo.toml");
@@ -325,6 +323,9 @@ fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>,
     let mut deps = Vec::new();
     for (table, entries) in dep_tables(&doc) {
         for (key, item) in entries.iter() {
+            if item.get("workspace").and_then(Item::as_bool) == Some(true) {
+                continue;
+            }
             let Some(spec) = parse_spec(key, item, manifest_dir) else {
                 continue;
             };
@@ -339,6 +340,7 @@ fn parse_member(root: &Path, package: MetadataPackage) -> Result<Vec<MemberDep>,
                 table: table.clone(),
                 key: key.to_string(),
                 spec,
+                entry: item.clone(),
             });
         }
     }
@@ -379,27 +381,25 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for an
-/// entry with `workspace = true`, and for a value that is neither a string nor a table.
+/// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for a
+/// value that is neither a string nor a table, and for an entry with `registry-index`, which
+/// cargo writes only in a packaged manifest. A `workspace` key is ignored, as cargo ignores it in
+/// `[workspace.dependencies]`.
 fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     if let Some(version) = item.as_str() {
         return Some(DepSpec {
             package: key.to_string(),
-            source: DepSource::Registry(Registry::CratesIo),
+            source: DepSource::Registry(None),
             version: Some(version.to_string()),
             default_features: true,
             underscore_default_features: false,
         });
     }
     let t = item.as_table_like()?;
-    if t.get("workspace").and_then(Item::as_bool) == Some(true) {
+    if t.contains_key("registry-index") {
         return None;
     }
-    let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
-        (Some(index), _) => Registry::Index(index),
-        (None, Some(name)) if name != "crates-io" => Registry::Named(name),
-        (None, _) => Registry::CratesIo,
-    };
+    let registry = str_field(t, "registry").filter(|name| name != "crates-io");
     let source = if let Some(path) = str_field(t, "path") {
         let path = manifest_dir.join(path);
         let path = std::fs::canonicalize(&path).unwrap_or(path);

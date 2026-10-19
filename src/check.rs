@@ -8,7 +8,7 @@ use toml_edit::{InlineTable, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::fix::{Edit, Fix, Promotion};
-use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
+use crate::workspace::{DepSource, DepSpec, MemberDep, WorkspaceInfo};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
 #[derive(Debug)]
@@ -33,13 +33,11 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 findings.push(not_inherited(dep, ws));
             }
             None if dep.spec.package == dep.key => {
-                let registry = match &dep.spec.source {
-                    DepSource::Registry(Registry::CratesIo) => None,
-                    DepSource::Registry(Registry::Named(name)) => Some(name.as_str()),
-                    _ => continue,
+                let DepSource::Registry(registry) = &dep.spec.source else {
+                    continue;
                 };
                 candidates
-                    .entry((&dep.key, registry))
+                    .entry((&dep.key, registry.as_deref()))
                     .or_default()
                     .push(dep);
             }
@@ -55,6 +53,9 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
         if members.len() < promotion_threshold {
             continue;
         }
+        // Cargo ignores or rejects a member's `default-features = false` unless the workspace
+        // entry also sets it, so one such member decides the workspace entry.
+        let default_features = usages.iter().all(|dep| dep.spec.default_features);
         let diagnostic = Diagnostic {
             severity: Severity::Warning,
             dependency: key.to_string(),
@@ -63,9 +64,17 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 members: members.iter().map(|m| m.to_string()).collect(),
                 suggested_version: most_common_version(&usages),
                 suggested_registry: registry.map(String::from),
+                suggested_default_features: default_features,
             },
         };
-        let fix = promotion_fix(key, registry, &usages, &members, &root_manifest);
+        let fix = promotion_fix(
+            key,
+            registry,
+            default_features,
+            &usages,
+            &members,
+            &root_manifest,
+        );
         findings.push(Finding { diagnostic, fix });
     }
 
@@ -76,8 +85,9 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let key = &dep.key;
     let member = &dep.member;
     let rewrite = edit(dep, ws.default_features);
+    let blocker = blocker(dep, ws);
     let (kind, description) = match (&dep.spec.version, &ws.version) {
-        (Some(from), Some(to)) if from != to => (
+        (Some(from), Some(to)) if !same_requirement(from, to) => (
             DiagnosticKind::VersionMismatch {
                 version: from.clone(),
                 member: member.clone(),
@@ -90,33 +100,21 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
                 version: version.clone(),
                 member: member.clone(),
                 workspace_version: workspace_version.clone(),
-                enable_default_features: rewrite.enable_default_features,
+                suggestion: match &blocker {
+                    Some(blocker) => Err(blocker.clone()),
+                    None => Ok(rewrite.suggestion()),
+                },
             },
             format!("`{key}` in {member} now uses workspace inheritance"),
         ),
     };
-    let fix = if !dep.spec.default_features && ws.default_features {
-        Err(format!(
-            "`{key}` in {member} sets `default-features = false`, so the workspace entry \
-             must set it too"
-        ))
-    } else if let (Some(version), None) = (&dep.spec.version, &ws.version) {
-        Err(format!(
-            "`{key}` in {member} requires version {version}, but the workspace entry has \
-             no version"
-        ))
-    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
-        Err(format!(
-            "`{key}` in {member} uses edition {}, so the workspace entry must use \
-             `default-features`, not `default_features`",
-            dep.edition,
-        ))
-    } else {
-        Ok(Fix {
+    let fix = match blocker {
+        Some(blocker) => Err(format!("`{key}` in {member} {blocker}")),
+        None => Ok(Fix {
             promotion: None,
             edits: vec![rewrite],
             description,
-        })
+        }),
     };
     let diagnostic = Diagnostic {
         severity: Severity::Error,
@@ -126,17 +124,42 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     Finding { diagnostic, fix }
 }
 
+/// Why `dep` cannot inherit `ws` as it is, as a clause after the entry's name: inheriting would
+/// change what cargo resolves, or cargo would reject the inherited entry.
+fn blocker(dep: &MemberDep, ws: &DepSpec) -> Option<String> {
+    if !dep.spec.default_features && ws.default_features {
+        Some("sets `default-features = false`, so the workspace entry must set it too".into())
+    } else if let (Some(version), None) = (&dep.spec.version, &ws.version) {
+        Some(format!(
+            "requires version {version}, but the workspace entry has no version"
+        ))
+    } else if ws.underscore_default_features && dep.edition.as_str() >= "2024" {
+        Some(format!(
+            "uses edition {}, so the workspace entry must use `default-features`, not \
+             `default_features`",
+            dep.edition,
+        ))
+    } else {
+        None
+    }
+}
+
 /// Promote only a version that every usage already declares, so `--fix` changes no member's
 /// version requirement.
 fn promotion_fix(
     key: &str,
     registry: Option<&str>,
+    default_features: bool,
     usages: &[&MemberDep],
     members: &[&str],
     root_manifest: &Path,
 ) -> Result<Fix, String> {
-    let first = &usages[0].spec.version;
-    if usages.iter().any(|dep| &dep.spec.version != first) {
+    let first = usages[0].spec.version.as_deref();
+    let same_as_first = |dep: &&MemberDep| match (dep.spec.version.as_deref(), first) {
+        (Some(version), Some(first)) => same_requirement(version, first),
+        (version, first) => version == first,
+    };
+    if !usages.iter().all(same_as_first) {
         let listed: Vec<String> = usages
             .iter()
             .map(|dep| {
@@ -149,15 +172,13 @@ fn promotion_fix(
             listed.join(", "),
         ));
     }
-    let Some(version) = first else {
+    // The promotion writes the version that the hint suggests.
+    let Some(version) = most_common_version(usages) else {
         return Err(format!(
             "`{key}` is not promoted, because no member gives a version"
         ));
     };
-    // Cargo ignores or rejects a member's `default-features = false` unless the workspace
-    // entry also sets it, so one such member decides the workspace entry.
-    let default_features = usages.iter().all(|dep| dep.spec.default_features);
-    let value = dep_value(version, registry, default_features);
+    let value = dep_value(&version, registry, default_features);
     let description = format!(
         "`{key} = {value}` added to [workspace.dependencies], updated: {}",
         members.join(", "),
@@ -199,18 +220,73 @@ fn edit(dep: &MemberDep, ws_default_features: bool) -> Edit {
     }
 }
 
+/// The requirement that the most crates declare, written as the first crate writes it.
 fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
     let declared: BTreeSet<(&str, &str)> = usages
         .iter()
         .filter_map(|dep| Some((dep.member.as_str(), dep.spec.version.as_deref()?)))
         .collect();
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (_, version) in declared {
-        *counts.entry(version).or_default() += 1;
+    // Each requirement, and the crates that declare it in any spelling.
+    let mut crates: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    for (member, version) in declared {
+        match crates
+            .iter_mut()
+            .find(|(seen, _)| same_requirement(seen, version))
+        {
+            Some((_, members)) => {
+                members.insert(member);
+            }
+            None => crates.push((version, BTreeSet::from([member]))),
+        }
     }
-    let (version, highest) = counts.iter().max_by_key(|&(_, count)| count)?;
-    let tied = counts.values().filter(|&count| count == highest).count() > 1;
-    (!tied).then(|| version.to_string())
+    let highest = crates.iter().map(|(_, members)| members.len()).max()?;
+    let mut most = crates
+        .iter()
+        .filter(|(_, members)| members.len() == highest);
+    let (version, _) = most.next()?;
+    most.next().is_none().then(|| version.to_string())
+}
+
+/// `true` when `a` and `b` match the same versions. A caret requirement with only numbers, such
+/// as `1` or `^1.0`, compares by its bounds. So `1` and `1.0` are the same, and `0` and `0.0` are
+/// not. Any other requirement compares as written.
+fn same_requirement(a: &str, b: &str) -> bool {
+    match (caret_bounds(a), caret_bounds(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The lower bound and the excluded upper bound of a caret requirement with only numbers, by
+/// cargo's caret rules. `None` for any other requirement, and for one that cargo rejects, such as
+/// `01`.
+fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
+    let requirement = requirement.trim_matches(' ');
+    let version = requirement
+        .strip_prefix('^')
+        .unwrap_or(requirement)
+        .trim_start_matches(' ');
+    let number = |part: &str| {
+        let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let leading_zero = part.len() > 1 && part.starts_with('0');
+        (digits && !leading_zero).then(|| part.parse().ok())?
+    };
+    let parts = version
+        .split('.')
+        .map(number)
+        .collect::<Option<Vec<u64>>>()?;
+    let (major, minor, patch) = match parts[..] {
+        [major] => (major, None, None),
+        [major, minor] => (major, Some(minor), None),
+        [major, minor, patch] => (major, Some(minor), Some(patch)),
+        _ => return None,
+    };
+    let upper = match (major, minor, patch) {
+        (0, Some(0), Some(patch)) => [0, 0, patch.checked_add(1)?],
+        (0, Some(minor), _) => [0, minor.checked_add(1)?, 0],
+        (major, _, _) => [major.checked_add(1)?, 0, 0],
+    };
+    Some(([major, minor.unwrap_or(0), patch.unwrap_or(0)], upper))
 }
 
 #[cfg(test)]
@@ -302,31 +378,132 @@ mod tests {
     }
 
     #[test]
-    fn test_not_inherited_names_default_features_only_where_the_member_needs_them() {
-        let found: Vec<_> = check("fix_inheritable_keys")
+    fn test_versions_compare_by_what_they_match() {
+        let ws = parse_workspace(&fixture("version_spellings")).unwrap();
+        let found: Vec<_> = run_checks(&ws, 2)
             .into_iter()
-            .filter_map(|d| match d.kind {
-                DiagnosticKind::NotInherited {
-                    enable_default_features,
-                    ..
-                } => Some((d.dependency, enable_default_features)),
-                _ => None,
+            .map(|f| {
+                let kind = match f.diagnostic.kind {
+                    DiagnosticKind::NotInherited { .. } => "not-inherited".to_string(),
+                    DiagnosticKind::VersionMismatch { .. } => "mismatch".to_string(),
+                    DiagnosticKind::PromotionCandidate {
+                        suggested_version, ..
+                    } => {
+                        let written = f.fix.as_ref().ok().and_then(|fix| fix.promotion.as_ref());
+                        let written = written.map(|p| p.value.to_string());
+                        format!("promotion {suggested_version:?} writes {written:?}")
+                    }
+                };
+                (f.diagnostic.dependency, kind, f.fix.is_ok())
             })
             .collect();
         let expected = [
-            ("core", false),
-            ("serde1", false),
-            ("log", false),
-            ("tokio", true),
+            ("serde", "not-inherited", true),
+            ("log", "not-inherited", true),
+            ("zero", "mismatch", true),
+            ("rand", "mismatch", true),
+            ("lead", "mismatch", true),
+            ("tab", "mismatch", true),
+            (
+                "itoa",
+                "promotion Some(\"1\") writes Some(\"\\\"1\\\"\")",
+                true,
+            ),
         ];
         assert_eq!(
             found,
-            expected.map(|(key, enable)| (key.to_string(), enable))
+            expected.map(|(dep, kind, fixed)| (dep.to_string(), kind.to_string(), fixed))
         );
     }
 
     #[test]
-    fn test_reads_every_dependency_table_except_a_shadowed_one() {
+    fn test_a_workspace_key_in_a_workspace_entry_is_ignored() {
+        assert_eq!(check("workspace_key_in_workspace_deps").len(), 4);
+        let no_version = Err("requires version 1, but the workspace entry has no version".into());
+        let inherited = Ok("{ workspace = true }".into());
+        let expected = [("itoa", &no_version), ("ryu", &inherited)].repeat(2);
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(key, suggestion)| (key.to_string(), suggestion.clone()))
+            .collect();
+        assert_eq!(suggestions("workspace_key_in_workspace_deps"), expected);
+    }
+
+    #[test]
+    fn test_promotion_hint_disables_default_features_when_a_crate_does() {
+        let found: Vec<_> = check("fix_keeps_resolution")
+            .into_iter()
+            .filter_map(|d| match d.kind {
+                DiagnosticKind::PromotionCandidate {
+                    suggested_default_features,
+                    ..
+                } => Some((d.dependency, suggested_default_features)),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            ("ed25519-dalek", false),
+            ("my-crate", true),
+            ("rand", true),
+            ("winapi", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(key, default)| (key.to_string(), default))
+        );
+    }
+
+    /// The (dependency, suggestion) of each not-inherited error.
+    fn suggestions(name: &str) -> Vec<(String, Result<String, String>)> {
+        check(name)
+            .into_iter()
+            .filter_map(|d| match d.kind {
+                DiagnosticKind::NotInherited { suggestion, .. } => Some((d.dependency, suggestion)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_not_inherited_suggests_the_entry_that_fix_writes_or_why_it_skips() {
+        let ok = |key: &str, entry: &str| -> (String, Result<String, String>) {
+            (key.into(), Ok(entry.into()))
+        };
+        assert_eq!(
+            suggestions("fix_inheritable_keys"),
+            [
+                ok(
+                    "core",
+                    r#"{ workspace = true, features = ["x"], optional = true }"#
+                ),
+                ok("serde1", "{ workspace = true }"),
+                ok("log", "{ workspace = true }"),
+                ok(
+                    "tokio",
+                    r#"{ workspace = true, features = ["full"], default-features = true }"#
+                ),
+            ]
+        );
+        let skipped = |key: &str, blocker: &str| -> (String, Result<String, String>) {
+            (key.into(), Err(blocker.into()))
+        };
+        assert_eq!(
+            suggestions("fix_skips"),
+            [
+                skipped(
+                    "serde",
+                    "sets `default-features = false`, so the workspace entry must set it too"
+                ),
+                skipped(
+                    "core",
+                    "requires version 0.1, but the workspace entry has no version"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reads_every_dependency_table() {
         let diags = check("dependency_tables");
         let app = "crates/app/Cargo.toml";
         assert_eq!(

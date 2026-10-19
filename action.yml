@@ -32,7 +32,7 @@ inputs:
     required: false
     default: "false"
   version:
-    description: "Version of cargo-workspace-inheritance-check to install"
+    description: "Version of cargo-workspace-inheritance-check to install, or path to build the crate in the action's own directory"
     required: false
     default: "latest"
 
@@ -44,11 +44,11 @@ runs:
       env:
         INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "$INPUT_VERSION" = "latest" ]; then
-          cargo install --locked cargo-workspace-inheritance-check
-        else
-          cargo install --locked cargo-workspace-inheritance-check --version "$INPUT_VERSION"
-        fi
+        case "$INPUT_VERSION" in
+          latest) cargo install --locked cargo-workspace-inheritance-check ;;
+          path) cargo install --locked --path "$GITHUB_ACTION_PATH" ;;
+          *) cargo install --locked cargo-workspace-inheritance-check --version "$INPUT_VERSION" ;;
+        esac
 
     - name: Run cargo-workspace-inheritance-check
       shell: bash

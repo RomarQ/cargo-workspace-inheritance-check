@@ -1,4 +1,4 @@
-workspace = { members = ["crates/*"] }
+workspace = { members = ["crates/*"], dependencies = { serde = "1.0" } }
 
 [package]
 name = "root"

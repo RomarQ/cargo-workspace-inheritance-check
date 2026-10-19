@@ -1,0 +1,16 @@
+[package]
+name = "a"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+log = "^0.4.0"
+zero = "0.0"
+rand = "0.8"
+lead = "1"
+tab = "1"
+itoa = "1.0"
+
+[dev-dependencies]
+itoa = "1"

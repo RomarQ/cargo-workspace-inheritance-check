@@ -1,10 +1,10 @@
 [package]
 name = "b"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-ed25519-dalek = "2.1"
+ed25519-dalek = { version = "2.1", default-features = false }
 my-crate = { version = "1.0", registry = "my-registry" }
 
 [dev-dependencies]

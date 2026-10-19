@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value};
 
 use crate::check::Finding;
-use crate::workspace::{MemberDep, dep_table_mut, read_manifest, write_manifest};
+use crate::workspace::{Manifest, MemberDep, dep_table_mut, read_manifest, write_manifest};
 
 /// Keys that cargo reads on an entry with `workspace = true`. It ignores any other key with an
 /// "unused manifest key" warning, and `default-features` has its own rule in [`Edit`].
@@ -39,6 +39,20 @@ pub(crate) struct Edit {
     pub enable_default_features: bool,
 }
 
+impl Edit {
+    /// The entry that the edit writes, as one inline line for a message. The edit itself keeps
+    /// the `[dependencies.serde]` form of an entry, and the lines and comments of an array.
+    pub(crate) fn suggestion(&self) -> String {
+        let mut entry = inherited_entry(&self.dep.entry, self.enable_default_features);
+        for (_, value) in entry.iter_mut() {
+            if let Some(array) = value.as_array_mut() {
+                array.fmt();
+            }
+        }
+        entry.to_string()
+    }
+}
+
 /// What [`apply_fixes`] did.
 #[derive(Debug, Default)]
 pub struct FixSummary {
@@ -61,8 +75,7 @@ pub struct FixSummary {
 /// has an entry that a fix names. Files written before the error keep their changes.
 pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     let mut summary = FixSummary::default();
-    let mut root: Option<(&PathBuf, DocumentMut)> = None;
-    let mut root_changed = false;
+    let mut root: Option<(&PathBuf, Manifest)> = None;
     let mut edits: BTreeMap<&PathBuf, Vec<&Edit>> = BTreeMap::new();
 
     for finding in findings {
@@ -75,18 +88,17 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
         };
         if let Some(promotion) = &fix.promotion {
             let path = &promotion.root_manifest;
-            let (_, doc) = match &mut root {
+            let (_, manifest) = match &mut root {
                 Some(loaded) => loaded,
                 None => root.insert((path, read_manifest(path)?)),
             };
-            if !insert_workspace_dep(doc, promotion)? {
+            if !insert_workspace_dep(&mut manifest.doc, promotion)? {
                 summary.skipped.push(format!(
                     "skipped: `{}` is not promoted, because [workspace.dependencies] already has it",
                     promotion.key,
                 ));
                 continue;
             }
-            root_changed = true;
         }
         for edit in &fix.edits {
             edits.entry(&edit.dep.manifest).or_default().push(edit);
@@ -95,17 +107,15 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
     }
 
     let mut modified_files = BTreeSet::new();
-    if let Some((path, doc)) = &root
-        && root_changed
-    {
-        write_manifest(path, doc)?;
+    if let Some((path, manifest)) = &root {
+        write_manifest(path, manifest)?;
         modified_files.insert(*path);
     }
     // The root manifest can also be a member, so it is read again after the promotions.
     for (manifest, file_edits) in edits {
-        let mut doc = read_manifest(manifest)?;
+        let mut parsed = read_manifest(manifest)?;
         for edit in file_edits {
-            let rewritten = dep_table_mut(&mut doc, &edit.dep.table).is_some_and(|table| {
+            let rewritten = dep_table_mut(&mut parsed.doc, &edit.dep.table).is_some_and(|table| {
                 rewrite_dep_entry(table, &edit.dep.key, edit.enable_default_features)
             });
             if !rewritten {
@@ -116,7 +126,7 @@ pub fn apply_fixes(findings: &[Finding]) -> Result<FixSummary, String> {
                 ));
             }
         }
-        write_manifest(manifest, &doc)?;
+        write_manifest(manifest, &parsed)?;
         modified_files.insert(manifest);
     }
     summary.files_modified = modified_files.len();
@@ -140,26 +150,33 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
         return true;
     }
 
+    let mut inherited = inherited_entry(item, enable_default_features);
     let Some(value) = item.as_value_mut() else {
         return false;
     };
+    // toml_edit keeps the comment after an entry in the value's decor.
+    *inherited.decor_mut() = value.decor().clone();
+    *value = Value::InlineTable(inherited);
+    true
+}
+
+/// The inline entry `{ workspace = true }`, with the keys of `entry` that cargo reads on an
+/// inherited entry.
+fn inherited_entry(entry: &Item, enable_default_features: bool) -> InlineTable {
     let mut inherited = InlineTable::new();
     inherited.insert("workspace", true.into());
-    if let Some(existing) = value.as_inline_table() {
-        for (k, v) in existing.iter() {
-            if INHERITABLE_KEYS.contains(&k) {
-                inherited.insert(k, v.clone());
-            }
+    for (key, item) in entry.as_table_like().into_iter().flat_map(|t| t.iter()) {
+        if INHERITABLE_KEYS.contains(&key)
+            && let Some(value) = item.as_value()
+        {
+            inherited.insert(key, value.clone());
         }
     }
     if enable_default_features {
         inherited.insert("default-features", true.into());
     }
     inherited.fmt();
-    // toml_edit keeps the comment after an entry in the value's decor.
-    *inherited.decor_mut() = value.decor().clone();
-    *value = Value::InlineTable(inherited);
-    true
+    inherited
 }
 
 /// Insert `promotion` into the root document. Returns `false` when the key already exists.
@@ -192,79 +209,4 @@ fn insert_workspace_dep(doc: &mut DocumentMut, promotion: &Promotion) -> Result<
         workspace.fmt();
     }
     Ok(true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::check::run_checks;
-    use crate::fixtures::{assert_fixed, fixture_copy};
-    use crate::workspace::parse_workspace;
-
-    /// Fix a copy of the fixture `name`, and assert that the copy matches `<name>.fixed`.
-    fn fix(name: &str) -> FixSummary {
-        let tmp = fixture_copy(name);
-        let findings = run_checks(&parse_workspace(tmp.path()).unwrap(), 2);
-        let summary = apply_fixes(&findings).unwrap();
-        assert_fixed(tmp.path(), name);
-        summary
-    }
-
-    #[test]
-    fn test_fix_keeps_only_inheritable_keys_and_comments() {
-        let summary = fix("fix_inheritable_keys");
-        assert_eq!(
-            summary.fixed[..2],
-            [
-                "fixed: `rand` in crates/a/Cargo.toml changed from 0.7 to 0.8 (workspace version)",
-                "fixed: `core` in crates/a/Cargo.toml now uses workspace inheritance",
-            ]
-        );
-    }
-
-    #[test]
-    fn test_fix_promotion_keeps_each_members_default_features_and_registry() {
-        let summary = fix("fix_promotion_default_features");
-        assert_eq!(
-            summary.fixed[1],
-            "fixed: `my-crate = { version = \"1.0\", registry = \"my-registry\" }` added to \
-             [workspace.dependencies], updated: crates/one/Cargo.toml, crates/two/Cargo.toml"
-        );
-        assert_eq!(summary.files_modified, 3);
-    }
-
-    #[test]
-    fn test_fix_skips_a_fix_that_changes_what_cargo_resolves() {
-        let summary = fix("fix_skips");
-        assert_eq!(
-            summary.skipped,
-            [
-                "skipped: `serde` in crates/a/Cargo.toml sets `default-features = false`, so the \
-                 workspace entry must set it too",
-                "skipped: `core` in crates/a/Cargo.toml requires version 0.1, but the workspace \
-                 entry has no version",
-                "skipped: `my-crate` is not promoted, because [workspace.dependencies] already has it",
-                "skipped: `rand` is not promoted, because members use different versions: \
-                 crates/a/Cargo.toml (0.7), crates/b/Cargo.toml (0.8)",
-            ]
-        );
-        assert_eq!(summary.files_modified, 3);
-    }
-
-    #[test]
-    fn test_fix_skips_a_workspace_spelling_that_the_member_edition_rejects() {
-        let summary = fix("fix_underscore_default_features");
-        let reason = "uses edition 2024, so the workspace entry must use `default-features`, not \
-                      `default_features`";
-        assert_eq!(
-            summary.skipped,
-            ["log", "itoa", "ryu"]
-                .map(|key| format!("skipped: `{key}` in crates/b/Cargo.toml {reason}"))
-        );
-    }
-
-    #[test]
-    fn test_fix_promotion_into_an_inline_workspace_of_a_root_package() {
-        fix("fix_inline_workspace_root_package");
-    }
 }
