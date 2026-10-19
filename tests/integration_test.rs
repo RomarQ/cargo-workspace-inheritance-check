@@ -82,59 +82,6 @@ fn test_version_mismatch_json_names_the_member_relative_to_the_workspace_root() 
 }
 
 #[test]
-fn test_path_inside_a_workspace_checks_the_whole_workspace() {
-    let root = Path::new("tests/fixtures/version_mismatch");
-    let from_root = run(root, &[]);
-    let from_member = run(&root.join("crates/bar"), &[]);
-    let stderr = String::from_utf8_lossy(&from_member.stderr);
-    assert_eq!(
-        from_member.status.code(),
-        from_root.status.code(),
-        "{stderr}"
-    );
-    assert_eq!(from_member.stdout, from_root.stdout, "{stderr}");
-}
-
-#[cfg(unix)]
-#[test]
-fn test_path_through_a_symlink_reads_the_workspace_it_points_into() {
-    let tmp = tempfile::tempdir().unwrap();
-    let crates =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/version_mismatch/crates");
-    std::os::unix::fs::symlink(crates, tmp.path().join("link")).unwrap();
-    let output = Command::new(BIN)
-        .args(["--path", "link/.."])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.ends_with("1 error, 0 warnings found\n"),
-        "{stdout}{stderr}"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn test_symlinked_root_manifest_keeps_the_workspace_of_its_directory() {
-    let tmp = fixture_copy("version_mismatch");
-    std::fs::rename(
-        tmp.path().join("Cargo.toml"),
-        tmp.path().join("Cargo.workspace.toml"),
-    )
-    .unwrap();
-    std::os::unix::fs::symlink("Cargo.workspace.toml", tmp.path().join("Cargo.toml")).unwrap();
-    let output = run(tmp.path(), &[]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.ends_with("1 error, 0 warnings found\n"),
-        "{stdout}{stderr}"
-    );
-}
-
-#[test]
 fn test_fix_keeps_what_cargo_resolves() {
     let tmp = fixture_copy("fix_keeps_resolution");
     let before = cargo_metadata(tmp.path());
