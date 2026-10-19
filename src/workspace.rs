@@ -137,8 +137,8 @@ const DEP_KINDS: [&str; 5] = [
 /// A parsed manifest, and the line ending that its file uses.
 pub(crate) struct Manifest {
     pub doc: DocumentMut,
-    /// Write `\r\n` line endings: most lines of the file end in `\r\n`, and no multi-line string
-    /// holds a bare `\n`, so the change touches no value.
+    /// Write `\r\n` line endings, because most lines of the file end in `\r\n`. No multi-line
+    /// string holds a bare `\n`, so the change touches no value.
     crlf: bool,
 }
 
@@ -313,9 +313,11 @@ fn workspace_manifest(path: &Path) -> Result<(PathBuf, DocumentMut), String> {
 /// commands, so it reads each `.cargo/config.toml` from `dir` up.
 fn cargo_metadata(dir: &Path, root: &Path) -> Result<Metadata, String> {
     // Cargo resolves a `..` in `--manifest-path` as text, but the file system follows a symlink
-    // first, so give cargo the manifest that the tool reads.
-    let manifest = std::fs::canonicalize(root.join("Cargo.toml"))
-        .map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?;
+    // first. So resolve the directory, as the tool reads it. Keep the file name, because cargo
+    // takes the workspace root from the directory of a symlinked manifest, not of its target.
+    let manifest = std::fs::canonicalize(root)
+        .map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?
+        .join("Cargo.toml");
     let args = [
         "--no-deps",
         "--offline",
@@ -537,12 +539,12 @@ fn canonical_url(url: &str) -> String {
 /// Cargo's form of a plain URL, from its `CanonicalUrl` on a URL that the `url` crate parsed.
 /// `None` for a URL that is not plain.
 ///
-/// A plain URL is `scheme://[user@]host[:port][/path]`, with ASCII letters, digits, and `.`, `_`,
-/// `~`, `-` (and `%` in the path) only. A `file` URL has no user, host, or port. It has no port
-/// with a leading zero, no empty segment but a trailing `/`, and no `.` or `..` segment, also not
-/// as `%2e` or before a `.git` that goes. Other URLs depend on
-/// more of the `url` crate's parsing rules. Cargo's form of a plain URL is plain too, so it never
-/// equals another URL as written.
+/// A plain URL is `scheme://[user@]host[:port][/path]` with only ASCII letters, digits, and these
+/// characters: `+.-` in the scheme, `._~-` in the user, `.-` in the host, and `._~-%` in a path
+/// segment. A `file` URL has no user, host, or port. A port has no leading zero. A path has no
+/// empty segment but a trailing `/`. It has no `.` or `..` segment, in any case, also not as
+/// `%2e` or before a `.git` that goes. Other URLs depend on more of the `url` crate's parsing
+/// rules. Cargo's form of a plain URL is plain too, so it never equals another URL as written.
 ///
 /// The scheme is lowercase. A special scheme (`http`, `https`, `ws`, `wss`, `ftp`, or `file`) has
 /// a lowercase host and drops its default port. One trailing `/` goes, unless the path is only `/`.
@@ -569,7 +571,10 @@ fn plain_canonical_url(url: &str) -> Option<String> {
     };
     let plain_segment = |segment: &str| {
         plain(segment, "._~-%")
-            && !matches!(segment, "." | ".." | "..git" | "...git")
+            && !matches!(
+                segment.to_ascii_lowercase().as_str(),
+                "." | ".." | "..git" | "...git"
+            )
             && !segment.to_ascii_lowercase().contains("%2e")
     };
     let segments: Vec<&str> = path.split('/').skip(1).collect();
@@ -780,6 +785,7 @@ mod tests {
             ),
             ("https:///repo.git", "https:///repo"),
             ("https://github.com//repo.git", "https://github.com//repo"),
+            ("https://github.com/Org/...GIT", "https://github.com/org/.."),
         ];
         for (a, b) in same {
             assert_eq!(canonical_url(a), canonical_url(b), "{a} and {b}");
