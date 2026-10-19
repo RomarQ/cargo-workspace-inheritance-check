@@ -55,6 +55,9 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
         if members.len() < promotion_threshold {
             continue;
         }
+        // Cargo ignores or rejects a member's `default-features = false` unless the workspace
+        // entry also sets it, so one such member decides the workspace entry.
+        let default_features = usages.iter().all(|dep| dep.spec.default_features);
         let diagnostic = Diagnostic {
             severity: Severity::Warning,
             dependency: key.to_string(),
@@ -63,9 +66,17 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 members: members.iter().map(|m| m.to_string()).collect(),
                 suggested_version: most_common_version(&usages),
                 suggested_registry: registry.map(String::from),
+                suggested_default_features: default_features,
             },
         };
-        let fix = promotion_fix(key, registry, &usages, &members, &root_manifest);
+        let fix = promotion_fix(
+            key,
+            registry,
+            default_features,
+            &usages,
+            &members,
+            &root_manifest,
+        );
         findings.push(Finding { diagnostic, fix });
     }
 
@@ -140,6 +151,7 @@ fn blocker(dep: &MemberDep, ws: &DepSpec) -> Option<String> {
 fn promotion_fix(
     key: &str,
     registry: Option<&str>,
+    default_features: bool,
     usages: &[&MemberDep],
     members: &[&str],
     root_manifest: &Path,
@@ -163,9 +175,6 @@ fn promotion_fix(
             "`{key}` is not promoted, because no member gives a version"
         ));
     };
-    // Cargo ignores or rejects a member's `default-features = false` unless the workspace
-    // entry also sets it, so one such member decides the workspace entry.
-    let default_features = usages.iter().all(|dep| dep.spec.default_features);
     let value = dep_value(version, registry, default_features);
     let description = format!(
         "`{key} = {value}` added to [workspace.dependencies], updated: {}",
@@ -307,6 +316,24 @@ mod tests {
                 ("my-crate", 2, Some("1.0"), Some("my-registry")),
                 ("rand", 3, Some("0.9"), None),
             ]
+        );
+    }
+
+    #[test]
+    fn test_promotion_hint_disables_default_features_when_a_crate_does() {
+        let found: Vec<_> = check("fix_promotion_default_features")
+            .into_iter()
+            .filter_map(|d| match d.kind {
+                DiagnosticKind::PromotionCandidate {
+                    suggested_default_features,
+                    ..
+                } => Some((d.dependency, suggested_default_features)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [("ed25519-dalek".into(), false), ("my-crate".into(), true)]
         );
     }
 

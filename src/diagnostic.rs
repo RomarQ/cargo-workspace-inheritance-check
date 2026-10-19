@@ -65,6 +65,10 @@ pub enum DiagnosticKind {
         /// The registry that the crates name, or `None` for crates.io.
         #[serde(skip_serializing_if = "Option::is_none")]
         suggested_registry: Option<String>,
+        /// `false` when a crate sets `default-features = false`, so the promoted entry must set
+        /// it too. The JSON output leaves it out.
+        #[serde(skip)]
+        suggested_default_features: bool,
     },
 }
 
@@ -115,6 +119,7 @@ impl Diagnostic {
                 members,
                 suggested_version,
                 suggested_registry,
+                suggested_default_features,
             } => {
                 let mut lines = vec![format!(
                     "`{dep}` appears in {count} crate{} but is not in [workspace.dependencies]",
@@ -122,7 +127,11 @@ impl Diagnostic {
                 )];
                 lines.extend(members.iter().map(|m| format!("  --> {m}")));
                 if let Some(version) = suggested_version {
-                    let value = dep_value(version, suggested_registry.as_deref(), true);
+                    let value = dep_value(
+                        version,
+                        suggested_registry.as_deref(),
+                        *suggested_default_features,
+                    );
                     lines.push(format!(
                         "  hint: consider adding `{dep} = {value}` to [workspace.dependencies]"
                     ));
@@ -201,16 +210,18 @@ mod tests {
                     suggestion: suggestion.map(String::from).map_err(String::from),
                 },
             };
-        let promotion = |version: Option<&str>, registry: Option<&str>| Diagnostic {
-            severity: Severity::Warning,
-            dependency: "serde_yaml".into(),
-            kind: DiagnosticKind::PromotionCandidate {
-                count: 1,
-                members: vec!["crates/config/Cargo.toml".into()],
-                suggested_version: version.map(String::from),
-                suggested_registry: registry.map(String::from),
-            },
-        };
+        let promotion =
+            |version: Option<&str>, registry: Option<&str>, default_features| Diagnostic {
+                severity: Severity::Warning,
+                dependency: "serde_yaml".into(),
+                kind: DiagnosticKind::PromotionCandidate {
+                    count: 1,
+                    members: vec!["crates/config/Cargo.toml".into()],
+                    suggested_version: version.map(String::from),
+                    suggested_registry: registry.map(String::from),
+                    suggested_default_features: default_features,
+                },
+            };
         DiagnosticReport::new(vec![
             not_inherited(
                 Some("0.12"),
@@ -229,8 +240,8 @@ mod tests {
                     workspace_version: "0.8".into(),
                 },
             },
-            promotion(Some("0.9"), Some("my-registry")),
-            promotion(None, None),
+            promotion(Some("0.9"), Some("my-registry"), false),
+            promotion(None, None, true),
         ])
     }
 
@@ -248,7 +259,7 @@ mod tests {
              warning: `serde_yaml` appears in 1 crate but is not in [workspace.dependencies]\n  \
              --> crates/config/Cargo.toml\n  \
              hint: consider adding \
-             `serde_yaml = { version = \"0.9\", registry = \"my-registry\" }` \
+             `serde_yaml = { version = \"0.9\", default-features = false, registry = \"my-registry\" }` \
              to [workspace.dependencies]\n\n\
              warning: `serde_yaml` appears in 1 crate but is not in [workspace.dependencies]\n  \
              --> crates/config/Cargo.toml\n\n\

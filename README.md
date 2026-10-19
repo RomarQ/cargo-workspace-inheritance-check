@@ -47,6 +47,8 @@ warning: `serde_yaml` appears in 3 crates but is not in [workspace.dependencies]
   hint: consider adding `serde_yaml = "0.9"` to [workspace.dependencies]
 ```
 
+The hint adds `default-features = false` when a crate sets it, as `--fix` does.
+
 By default, this is reported as a **warning** and does not cause the tool to exit with a non-zero code. Use `--promotion-failure` to treat promotion candidates as errors.
 
 ### How entries are compared
