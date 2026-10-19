@@ -7,8 +7,10 @@ use std::path::Path;
 use toml_edit::{InlineTable, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
-use crate::fix::{Edit, Fix, Promotion, has_inline_comment};
-use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
+use crate::fix::{Edit, Fix, Promotion};
+use crate::workspace::{
+    DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo, has_inline_comment,
+};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
 #[derive(Debug)]
@@ -69,14 +71,20 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 suggested_default_features: default_features,
             },
         };
-        let fix = promotion_fix(
-            key,
-            registry,
-            default_features,
-            &usages,
-            &members,
-            &root_manifest,
-        );
+        let fix = if workspace.root_inline_comment {
+            Err(format!(
+                "`{key}` is not promoted, because an inline table in the root manifest {LOSES_COMMENT}"
+            ))
+        } else {
+            promotion_fix(
+                key,
+                registry,
+                default_features,
+                &usages,
+                &members,
+                &root_manifest,
+            )
+        };
         findings.push(Finding { diagnostic, fix });
     }
 
@@ -130,7 +138,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
 }
 
 /// Why `--fix` skips an entry that [`has_inline_comment`].
-const LOSES_COMMENT: &str = "has a comment inside its inline table, and `--fix` would lose it";
+const LOSES_COMMENT: &str = "has a comment between its braces, and `--fix` would lose it";
 
 /// Why `dep` cannot inherit `ws` as it is, as a clause after the entry's name: inheriting would
 /// change what cargo resolves, or cargo would reject the inherited entry.
@@ -306,8 +314,10 @@ fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
     use crate::fixtures::fixture;
-    use crate::workspace::parse_workspace;
+    use crate::workspace::{DepTable, parse_workspace, read_manifest};
 
     fn check(name: &str) -> Vec<Diagnostic> {
         let ws = parse_workspace(&fixture(name)).unwrap();
@@ -507,6 +517,68 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A workspace with entries from the `inline_comments` manifest. Cargo 1.88, the minimum
+    /// supported version, cannot load TOML 1.1, so the test builds the workspace by hand.
+    fn inline_comment_workspace(root_inline_comment: bool) -> WorkspaceInfo {
+        let manifest = read_manifest(&fixture("inline_comments").join("Cargo.toml")).unwrap();
+        let entries = manifest.doc["dependencies"].as_table_like().unwrap();
+        let spec = |key: &str| DepSpec {
+            package: key.into(),
+            source: DepSource::Registry(Registry::CratesIo),
+            version: Some("1.0".into()),
+            default_features: true,
+            underscore_default_features: false,
+        };
+        let dep = |key: &str, member: &str, entry: &str| MemberDep {
+            manifest: PathBuf::from(member),
+            member: member.into(),
+            edition: "2021".into(),
+            table: DepTable {
+                target: None,
+                kind: "dependencies",
+            },
+            key: key.into(),
+            spec: spec(key),
+            entry: entries.get(entry).unwrap().clone(),
+        };
+        WorkspaceInfo {
+            root_path: PathBuf::new(),
+            workspace_deps: ["commented", "plain"]
+                .map(|key| (key.to_string(), spec(key)))
+                .into(),
+            member_deps: vec![
+                dep("commented", "a", "before_key"),
+                dep("plain", "a", "after_entry"),
+                dep("clean", "a", "after_entry"),
+                dep("promoted", "a", "nested"),
+                dep("clean", "b", "multi_line"),
+                dep("promoted", "b", "multi_line"),
+            ],
+            root_inline_comment,
+        }
+    }
+
+    #[test]
+    fn test_fix_skips_a_rewrite_that_loses_a_comment() {
+        let skipped = |ws: WorkspaceInfo| -> Vec<(String, bool)> {
+            run_checks(&ws, 2)
+                .into_iter()
+                .map(|f| (f.diagnostic.dependency, f.fix.is_err()))
+                .collect()
+        };
+        let expected = |root: bool| {
+            [
+                ("commented", true),
+                ("plain", false),
+                ("clean", root),
+                ("promoted", true),
+            ]
+            .map(|(key, skip)| (key.to_string(), skip))
+        };
+        assert_eq!(skipped(inline_comment_workspace(false)), expected(false));
+        assert_eq!(skipped(inline_comment_workspace(true)), expected(true));
     }
 
     #[test]

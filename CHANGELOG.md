@@ -24,13 +24,13 @@ All notable changes to this project will be documented in this file.
 
 - `--fix` keeps what cargo resolves for each member, except the version on a mismatch and the features of the workspace entry. It removes every key that cargo ignores on an inherited entry, such as `path`, `git`, `package`, and `registry`, and keeps `features`, `optional`, and `public`.
 - `--fix` writes `default-features = true` where the member uses default features and the workspace entry disables them. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
-- The not-inherited error suggests the entry that `--fix` writes. The entry keeps the `features`, `optional`, and `public` of the member entry, and adds `default-features = true` where the member needs it. When `--fix` skips the entry, the error gives the reason in a `hint:` line, not an entry.
+- The not-inherited error suggests the entry that `--fix` writes. The entry keeps the `features`, `optional`, and `public` of the member entry, and adds `default-features = true` where the member needs it. When the member cannot inherit the workspace entry as it is, the error gives the reason in a `hint:` line, not an entry.
 - The promotion hint adds `default-features = false` when a crate sets it, as `--fix` does.
 - A `workspace` key in a `[workspace.dependencies]` entry is ignored, as cargo ignores it. So the entry is checked like any other entry, and its key is not a promotion candidate.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - `--fix` keeps the CRLF line endings of a manifest.
-- `--fix` skips an inline-table entry with a comment between its braces, which only TOML 1.1 allows, because the rewrite to one line would lose the comment.
+- `--fix` skips an inline-table entry with a comment between its braces, because the rewrite to one line would lose the comment. Only TOML 1.1 allows such a comment. It also skips a promotion into an inline root table with such a comment. In the `[dependencies.serde]` form, the comments of a removed key go to the `workspace = true` line.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
 - Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the hyphen spelling is also present, because cargo then ignores them.
 - `--path ./x` gives member paths relative to the workspace root.

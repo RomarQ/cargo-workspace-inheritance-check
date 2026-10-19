@@ -13,7 +13,8 @@ serde1 = { package = "serde", version = "1.0", default-features = true }
 log = { version = "0.4", default-features = false }
 
 [dependencies.tokio]
-version = "1"
+# pinned for the MSRV
+version = "1" # held
 features = [
     "full", # all of it
 ] # needed

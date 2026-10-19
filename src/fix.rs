@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use toml_edit::{Decor, DocumentMut, InlineTable, Item, RawString, TableLike, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, RawString, Table, TableLike, Value};
 
 use crate::check::Finding;
 use crate::workspace::{Manifest, MemberDep, dep_table_mut, read_manifest, write_manifest};
@@ -140,10 +140,19 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
         return false;
     };
 
-    // `[dependencies.serde]` form: edit the table in place, so its comments stay.
+    // `[dependencies.serde]` form: edit the table in place, so its comments stay. The comments of
+    // a removed key go to the `workspace` line that replaces it.
     if let Some(dep) = item.as_table_mut() {
+        let (lines, after) = removed_comments(dep);
         dep.retain(|k, _| INHERITABLE_KEYS.contains(&k));
-        dep.insert("workspace", toml_edit::value(true));
+        let mut inherit = toml_edit::value(true);
+        if let Some(value) = inherit.as_value_mut() {
+            value.decor_mut().set_suffix(after);
+        }
+        dep.insert("workspace", inherit);
+        if let Some(mut key) = dep.key_mut("workspace") {
+            key.leaf_decor_mut().set_prefix(lines);
+        }
         if enable_default_features {
             dep.insert("default-features", toml_edit::value(true));
         }
@@ -158,6 +167,35 @@ fn rewrite_dep_entry(table: &mut dyn TableLike, key: &str, enable_default_featur
     *inherited.decor_mut() = value.decor().clone();
     *value = Value::InlineTable(inherited);
     true
+}
+
+/// The comments of the keys of `table` that an inherited entry leaves out: the comment lines
+/// before them, and the first comment after a value. A later comment after a value becomes a line.
+fn removed_comments(table: &Table) -> (String, String) {
+    fn comment(raw: Option<&RawString>) -> Option<&str> {
+        raw.and_then(RawString::as_str)
+            .filter(|text| text.contains('#'))
+    }
+    let mut lines = String::new();
+    let mut after: Option<&str> = None;
+    for (name, item) in table.iter() {
+        if INHERITABLE_KEYS.contains(&name) {
+            continue;
+        }
+        let key = table.key(name).expect("an entry has a key");
+        if let Some(before) = comment(key.leaf_decor().prefix()) {
+            lines.push_str(before);
+        }
+        match (
+            comment(item.as_value().and_then(|v| v.decor().suffix())),
+            after,
+        ) {
+            (Some(text), None) => after = Some(text),
+            (Some(text), Some(_)) => lines.push_str(&format!("{}\n", text.trim_start())),
+            (None, _) => {}
+        }
+    }
+    (lines, after.unwrap_or_default().to_string())
 }
 
 /// The inline entry `{ workspace = true }`, with the keys of `entry` that cargo reads on an
@@ -177,24 +215,6 @@ fn inherited_entry(entry: &Item, enable_default_features: bool) -> InlineTable {
     }
     inherited.fmt();
     inherited
-}
-
-/// `true` when `entry` is an inline table with a comment between its braces, which only TOML 1.1
-/// allows. The rewrite to one line would lose the comment.
-pub(crate) fn has_inline_comment(entry: &Item) -> bool {
-    let Some(table) = entry.as_inline_table() else {
-        return false;
-    };
-    let comment = |raw: Option<&RawString>| {
-        raw.and_then(RawString::as_str)
-            .is_some_and(|text| text.contains('#'))
-    };
-    let in_decor = |decor: &Decor| comment(decor.prefix()) || comment(decor.suffix());
-    comment(Some(table.trailing()))
-        || table.iter().any(|(name, value)| {
-            let key = table.key(name).expect("an entry has a key");
-            in_decor(key.leaf_decor()) || in_decor(key.dotted_decor()) || in_decor(value.decor())
-        })
 }
 
 /// Insert `promotion` into the root document. Returns `false` when the key already exists.
@@ -315,27 +335,6 @@ mod tests {
             summary.skipped,
             ["log", "itoa", "ryu"]
                 .map(|key| format!("skipped: `{key}` in crates/b/Cargo.toml {reason}"))
-        );
-    }
-
-    #[test]
-    fn test_only_a_comment_between_inline_braces_blocks_the_rewrite() {
-        let manifest = read_manifest(&fixture("inline_comments").join("Cargo.toml")).unwrap();
-        let entries = manifest.doc["dependencies"].as_table_like().unwrap();
-        let found: Vec<_> = entries
-            .iter()
-            .map(|(key, entry)| (key, has_inline_comment(entry)))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                ("before_key", true),
-                ("after_comma", true),
-                ("before_brace", true),
-                ("multi_line", false),
-                ("in_array", false),
-                ("after_entry", false),
-            ]
         );
     }
 
