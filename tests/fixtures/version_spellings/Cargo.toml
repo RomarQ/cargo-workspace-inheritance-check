@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+serde = "1.0"
+log = "0.4"
+zero = "0"
+rand = "=0.8"

@@ -89,7 +89,7 @@ fn not_inherited(dep: &MemberDep, ws: &DepSpec) -> Finding {
     let rewrite = edit(dep, ws.default_features);
     let blocker = blocker(dep, ws);
     let (kind, description) = match (&dep.spec.version, &ws.version) {
-        (Some(from), Some(to)) if from != to => (
+        (Some(from), Some(to)) if !same_requirement(from, to) => (
             DiagnosticKind::VersionMismatch {
                 version: from.clone(),
                 member: member.clone(),
@@ -162,8 +162,12 @@ fn promotion_fix(
     members: &[&str],
     root_manifest: &Path,
 ) -> Result<Fix, String> {
-    let first = &usages[0].spec.version;
-    if usages.iter().any(|dep| &dep.spec.version != first) {
+    let first = usages[0].spec.version.as_deref();
+    let same_as_first = |dep: &&MemberDep| match (dep.spec.version.as_deref(), first) {
+        (Some(version), Some(first)) => same_requirement(version, first),
+        (version, first) => version == first,
+    };
+    if !usages.iter().all(same_as_first) {
         let listed: Vec<String> = usages
             .iter()
             .map(|dep| {
@@ -229,18 +233,67 @@ fn edit(dep: &MemberDep, ws_default_features: bool) -> Edit {
     }
 }
 
+/// The requirement that the most crates declare, written as the first crate writes it.
 fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
     let declared: BTreeSet<(&str, &str)> = usages
         .iter()
         .filter_map(|dep| Some((dep.member.as_str(), dep.spec.version.as_deref()?)))
         .collect();
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (_, version) in declared {
-        *counts.entry(version).or_default() += 1;
+    // Each requirement, and the crates that declare it in any spelling.
+    let mut crates: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    for (member, version) in declared {
+        match crates
+            .iter_mut()
+            .find(|(seen, _)| same_requirement(seen, version))
+        {
+            Some((_, members)) => {
+                members.insert(member);
+            }
+            None => crates.push((version, BTreeSet::from([member]))),
+        }
     }
-    let (version, highest) = counts.iter().max_by_key(|&(_, count)| count)?;
-    let tied = counts.values().filter(|&count| count == highest).count() > 1;
-    (!tied).then(|| version.to_string())
+    let highest = crates.iter().map(|(_, members)| members.len()).max()?;
+    let mut most = crates
+        .iter()
+        .filter(|(_, members)| members.len() == highest);
+    let (version, _) = most.next()?;
+    most.next().is_none().then(|| version.to_string())
+}
+
+/// `true` when `a` and `b` match the same versions. A caret requirement with only numbers, such
+/// as `1` or `^1.0`, compares by its bounds, so `1` and `1.0` are the same and `0` and `0.0` are
+/// not. Any other requirement compares as written.
+fn same_requirement(a: &str, b: &str) -> bool {
+    match (caret_bounds(a), caret_bounds(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The lower bound and the excluded upper bound of a caret requirement with only numbers, by
+/// cargo's caret rules.
+fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
+    let requirement = requirement.trim();
+    let version = requirement
+        .strip_prefix('^')
+        .unwrap_or(requirement)
+        .trim_start();
+    let parts = version
+        .split('.')
+        .map(|part| part.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let (major, minor, patch) = match parts[..] {
+        [major] => (major, None, None),
+        [major, minor] => (major, Some(minor), None),
+        [major, minor, patch] => (major, Some(minor), Some(patch)),
+        _ => return None,
+    };
+    let upper = match (major, minor, patch) {
+        (0, Some(0), Some(patch)) => [0, 0, patch.checked_add(1)?],
+        (0, Some(minor), _) => [0, minor.checked_add(1)?, 0],
+        (major, _, _) => [major.checked_add(1)?, 0, 0],
+    };
+    Some(([major, minor.unwrap_or(0), patch.unwrap_or(0)], upper))
 }
 
 #[cfg(test)]
@@ -328,6 +381,35 @@ mod tests {
                 ("my-crate", 2, Some("1.0"), Some("my-registry")),
                 ("rand", 3, Some("0.9"), None),
             ]
+        );
+    }
+
+    #[test]
+    fn test_versions_compare_by_what_they_match() {
+        let ws = parse_workspace(&fixture("version_spellings")).unwrap();
+        let found: Vec<_> = run_checks(&ws, 2)
+            .into_iter()
+            .map(|f| {
+                let kind = match f.diagnostic.kind {
+                    DiagnosticKind::NotInherited { .. } => "not-inherited".to_string(),
+                    DiagnosticKind::VersionMismatch { .. } => "mismatch".to_string(),
+                    DiagnosticKind::PromotionCandidate {
+                        suggested_version, ..
+                    } => format!("promotion {suggested_version:?}"),
+                };
+                (f.diagnostic.dependency, kind, f.fix.is_ok())
+            })
+            .collect();
+        let expected = [
+            ("serde", "not-inherited", true),
+            ("log", "not-inherited", true),
+            ("zero", "mismatch", true),
+            ("rand", "mismatch", true),
+            ("itoa", "promotion Some(\"1\")", true),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(dep, kind, fixed)| (dep.to_string(), kind.to_string(), fixed))
         );
     }
 
