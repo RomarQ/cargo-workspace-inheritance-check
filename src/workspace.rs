@@ -2,6 +2,7 @@
 //! dependency entries that each member declares.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 use std::process::Command;
@@ -232,7 +233,7 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     };
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
-    let mut metadata = cargo_metadata(&root_dir)?;
+    let mut metadata = cargo_metadata(path, &root_dir)?;
     metadata
         .packages
         .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
@@ -272,11 +273,8 @@ fn workspace_manifest(path: &Path) -> Result<(PathBuf, DocumentMut), String> {
         Ok(read) if read.doc.contains_key("workspace") => return Ok((path.into(), read.doc)),
         read => read.err(),
     };
-    let stdout = run_cargo(
-        path,
-        &["locate-project", "--workspace", "--message-format", "plain"],
-    )
-    .map_err(|e| {
+    let args = ["--workspace", "--message-format", "plain"].map(OsStr::new);
+    let stdout = run_cargo(path, "locate-project", &args).map_err(|e| {
         read.unwrap_or_else(|| {
             let manifest = manifest.display();
             format!("No [workspace] section in {manifest}, and cargo finds no workspace: {e}")
@@ -290,31 +288,36 @@ fn workspace_manifest(path: &Path) -> Result<(PathBuf, DocumentMut), String> {
     Ok((root.into(), read_manifest(&root.join("Cargo.toml"))?.doc))
 }
 
-fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
-    // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
-    let args = ["metadata", "--no-deps", "--offline", "--color", "never"];
+/// The members of the workspace whose root is `root`. Cargo runs in `dir`, as for cargo's own
+/// commands, so it reads each `.cargo/config.toml` from `dir` up.
+fn cargo_metadata(dir: &Path, root: &Path) -> Result<Metadata, String> {
+    let manifest = std::path::absolute(root.join("Cargo.toml"))
+        .map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?;
     let args = [
-        &args[..],
-        &["--format-version", "1", "--manifest-path", "Cargo.toml"],
-    ]
-    .concat();
-    serde_json::from_slice(&run_cargo(root, &args)?)
+        "--no-deps",
+        "--offline",
+        "--format-version",
+        "1",
+        "--manifest-path",
+    ];
+    let args = [&args.map(OsStr::new)[..], &[manifest.as_os_str()]].concat();
+    serde_json::from_slice(&run_cargo(dir, "metadata", &args)?)
         .map_err(|e| format!("Failed to read cargo metadata output: {e}"))
 }
 
-/// Run cargo with `args` in `dir`, and return what it prints on stdout.
-fn run_cargo(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let subcommand = args[0];
+/// Run `cargo <subcommand> <args>` in `dir`, and return what it prints on stdout.
+fn run_cargo(dir: &Path, subcommand: &str, args: &[&OsStr]) -> Result<Vec<u8>, String> {
     let mut cargo = std::env::var_os("CARGO")
         .filter(|cargo| !cargo.is_empty())
         .map_or_else(|| PathBuf::from("cargo"), PathBuf::from);
-    // Cargo runs in the root, so resolve a path from here first. A bare name, with no
+    // Cargo runs in `dir`, so resolve a relative path from here first. A bare name, with no
     // separator, stays a lookup on PATH.
     if cargo.to_string_lossy().contains(std::path::is_separator) {
         cargo = std::path::absolute(&cargo)
             .map_err(|e| format!("Failed to resolve CARGO `{}`: {e}", cargo.display()))?;
     }
     let output = Command::new(&cargo)
+        .args(["--color", "never", subcommand])
         .args(args)
         .current_dir(dir)
         .output()
@@ -591,6 +594,13 @@ mod tests {
             let err = parse_workspace(&fixture(name)).unwrap_err();
             assert!(err.contains("Invalid `ignore`"), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn test_cargo_reads_the_config_of_the_path_inside_a_workspace() {
+        let ws = parse_workspace(&fixture("member_config/crates/a")).unwrap();
+        let deps: Vec<_> = ws.member_deps.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(deps, ["foo"]);
     }
 
     #[test]

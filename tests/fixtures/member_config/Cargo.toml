@@ -1,0 +1,5 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+foo = { version = "1", registry = "my-registry" }
