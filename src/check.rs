@@ -427,6 +427,8 @@ mod tests {
             ("zero", "mismatch", true),
             ("rand", "mismatch", true),
             ("lead", "mismatch", true),
+            ("plus", "mismatch", true),
+            ("tab", "mismatch", true),
             (
                 "itoa",
                 "promotion Some(\"1\") writes Some(\"\\\"1\\\"\")",

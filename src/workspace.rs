@@ -711,6 +711,8 @@ mod tests {
             ]
         );
         assert!(root_inline_comment(&manifest.doc));
+        let inline = read_manifest(&fixture("inline_comment_workspace").join("Cargo.toml"));
+        assert!(root_inline_comment(&inline.unwrap().doc));
         let plain = read_manifest(&fixture("fix_inline_workspace_root_package").join("Cargo.toml"));
         assert!(!root_inline_comment(&plain.unwrap().doc));
     }

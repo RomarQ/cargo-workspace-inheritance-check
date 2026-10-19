@@ -17,5 +17,6 @@ features = [
     "full", # all of it
 ] # needed
 # pinned for the MSRV
+# the defaults
 workspace = true # held
 default-features = true
