@@ -199,19 +199,20 @@ pub(crate) fn dep_table_mut<'a>(
     scope.get_mut(table.kind)?.as_table_like_mut()
 }
 
-/// Parse the workspace whose root manifest is `path/Cargo.toml`.
+/// Parse the workspace whose root is `path`, or the workspace that `path` is in.
 ///
-/// Cargo decides the member set: this runs `cargo metadata --no-deps` in `path`, with the
-/// cargo from the `CARGO` environment variable that cargo sets for subcommands when it is not
-/// empty, or else the `cargo` on `PATH`.
+/// When `path/Cargo.toml` has no `[workspace]` table, `cargo locate-project --workspace` finds
+/// the root above `path`, as for cargo's own commands. Cargo decides the member set: this runs
+/// `cargo metadata --no-deps` in the root. The cargo is the one in the `CARGO` environment
+/// variable that cargo sets for subcommands, when it is not empty, or else `cargo` on `PATH`.
 ///
 /// # Errors
 ///
-/// Returns an error when the root manifest has no `[workspace]` table, when `cargo metadata`
-/// fails, when a manifest cannot be read or parsed, or when an ignore rule is invalid.
+/// Returns an error when no workspace root is found, when cargo fails, when a manifest cannot be
+/// read or parsed, or when an ignore rule is invalid.
 pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
-    let root_toml_path = path.join("Cargo.toml");
-    let doc = read_manifest(&root_toml_path)?.doc;
+    let (root_dir, doc) = workspace_manifest(path)?;
+    let root_toml_path = root_dir.join("Cargo.toml");
 
     let workspace_table = doc
         .get("workspace")
@@ -224,14 +225,14 @@ pub fn parse_workspace(path: &Path) -> Result<WorkspaceInfo, String> {
     let workspace_deps: BTreeMap<String, DepSpec> = workspace_entries
         .into_iter()
         .flat_map(|deps| deps.iter())
-        .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, path)?)))
+        .filter_map(|(key, item)| Some((key.to_string(), parse_spec(key, item, &root_dir)?)))
         .collect();
     let unusable_key = |key: &str| {
         !workspace_deps.contains_key(key) && workspace_entries.is_some_and(|e| e.contains_key(key))
     };
     let ignore_rules = parse_ignore_rules(workspace_table)?;
 
-    let mut metadata = cargo_metadata(path)?;
+    let mut metadata = cargo_metadata(&root_dir)?;
     metadata
         .packages
         .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
@@ -264,7 +265,46 @@ struct MetadataPackage {
     edition: String,
 }
 
+/// The root of the workspace that `path` is, or is in, and its manifest.
+fn workspace_manifest(path: &Path) -> Result<(PathBuf, DocumentMut), String> {
+    let manifest = path.join("Cargo.toml");
+    let read = match read_manifest(&manifest) {
+        Ok(read) if read.doc.contains_key("workspace") => return Ok((path.into(), read.doc)),
+        read => read.err(),
+    };
+    let stdout = run_cargo(
+        path,
+        &["locate-project", "--workspace", "--message-format", "plain"],
+    )
+    .map_err(|e| {
+        read.unwrap_or_else(|| {
+            let manifest = manifest.display();
+            format!("No [workspace] section in {manifest}, and cargo finds no workspace: {e}")
+        })
+    })?;
+    let located = String::from_utf8(stdout)
+        .map_err(|_| "cargo locate-project gave a path that is not UTF-8".to_string())?;
+    let root = Path::new(located.trim_end())
+        .parent()
+        .expect("a manifest path ends in Cargo.toml");
+    Ok((root.into(), read_manifest(&root.join("Cargo.toml"))?.doc))
+}
+
 fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
+    // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
+    let args = ["metadata", "--no-deps", "--offline", "--color", "never"];
+    let args = [
+        &args[..],
+        &["--format-version", "1", "--manifest-path", "Cargo.toml"],
+    ]
+    .concat();
+    serde_json::from_slice(&run_cargo(root, &args)?)
+        .map_err(|e| format!("Failed to read cargo metadata output: {e}"))
+}
+
+/// Run cargo with `args` in `dir`, and return what it prints on stdout.
+fn run_cargo(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let subcommand = args[0];
     let mut cargo = std::env::var_os("CARGO")
         .filter(|cargo| !cargo.is_empty())
         .map_or_else(|| PathBuf::from("cargo"), PathBuf::from);
@@ -274,15 +314,13 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
         cargo = std::path::absolute(&cargo)
             .map_err(|e| format!("Failed to resolve CARGO `{}`: {e}", cargo.display()))?;
     }
-    // Run from the root so cargo reads the workspace's own `.cargo/config.toml`.
     let output = Command::new(&cargo)
-        .args(["metadata", "--no-deps", "--offline", "--color", "never"])
-        .args(["--format-version", "1", "--manifest-path", "Cargo.toml"])
-        .current_dir(root)
+        .args(args)
+        .current_dir(dir)
         .output()
         .map_err(|e| {
             let cargo = cargo.display();
-            let mut message = format!("Failed to run cargo metadata with `{cargo}`: {e}");
+            let mut message = format!("Failed to run cargo {subcommand} with `{cargo}`: {e}");
             if e.kind() == ErrorKind::NotFound {
                 message.push_str(
                     ". The tool needs cargo: set CARGO to its path, or unset CARGO and put cargo \
@@ -293,14 +331,13 @@ fn cargo_metadata(root: &Path) -> Result<Metadata, String> {
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let root = root.display();
+        let dir = dir.display();
         return Err(match stderr.trim_end() {
-            "" => format!("cargo metadata failed for {root} with {}", output.status),
-            stderr => format!("cargo metadata failed for {root}:\n{stderr}"),
+            "" => format!("cargo {subcommand} failed for {dir} with {}", output.status),
+            stderr => format!("cargo {subcommand} failed for {dir}:\n{stderr}"),
         });
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("Failed to read cargo metadata output: {e}"))
+    Ok(output.stdout)
 }
 
 fn parse_ignore_rules(workspace: &dyn TableLike) -> Result<Vec<IgnoreRule>, String> {

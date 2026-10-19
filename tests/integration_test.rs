@@ -82,6 +82,20 @@ fn test_version_mismatch_json_names_the_member_relative_to_the_workspace_root() 
 }
 
 #[test]
+fn test_path_inside_a_workspace_checks_the_whole_workspace() {
+    let root = Path::new("tests/fixtures/version_mismatch");
+    let from_root = run(root, &[]);
+    let from_member = run(&root.join("crates/bar"), &[]);
+    let stderr = String::from_utf8_lossy(&from_member.stderr);
+    assert_eq!(
+        from_member.status.code(),
+        from_root.status.code(),
+        "{stderr}"
+    );
+    assert_eq!(from_member.stdout, from_root.stdout, "{stderr}");
+}
+
+#[test]
 fn test_fix_keeps_what_cargo_resolves() {
     let tmp = fixture_copy("fix_keeps_resolution");
     let before = cargo_metadata(tmp.path());

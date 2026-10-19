@@ -8,7 +8,7 @@ branding:
 
 inputs:
   path:
-    description: "Path to the workspace root"
+    description: "Path to the workspace root, or to a directory inside it"
     required: false
     default: "."
   promotion-threshold:

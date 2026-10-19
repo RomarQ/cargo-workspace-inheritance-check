@@ -79,7 +79,7 @@ cargo workspace-inheritance-check
 
 | Flag <br/>_________________________ | Description | Default |
 |-------------------|-------------|---------|
-| `--path <PATH>` | Path to the workspace root | `.` |
+| `--path <PATH>` | Path to the workspace root, or to a directory inside the workspace. From a directory inside it, the tool checks the whole workspace, and `--fix` fixes the whole workspace. | `.` |
 | `--promotion-threshold <N>` | Minimum number of crates a dependency must appear in before it is flagged as a promotion candidate. For example, `--promotion-threshold 3` means a dependency must appear in at least 3 crates to trigger a warning. | `2` |
 | `--promotion-failure` | Promote promotion candidate warnings to errors, causing the tool to exit with code 1 when candidates are found. Useful in CI when you want to enforce that all shared dependencies are declared in `[workspace.dependencies]`. | `false` |
 | `--format <FORMAT>` | Output format: `human` or `json` | `human` |
@@ -195,7 +195,7 @@ All inputs are optional:
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `path` | Path to the workspace root | `.` |
+| `path` | Path to the workspace root, or to a directory inside it | `.` |
 | `promotion-threshold` | Min crate count for promotion warning | `2` |
 | `promotion-failure` | Treat promotion candidates as errors | `false` |
 | `format` | Output format: `human` or `json` | `human` |
