@@ -212,7 +212,7 @@ All inputs are optional:
 
 Dependencies that use [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry) are handled correctly:
 
-- Promotion candidates are grouped by name **and** registry — deps from different registries are never grouped together
+- Promotion candidates are grouped by name **and** registry, so dependencies from different registries are never grouped together.
 - `--fix` carries `registry` into promoted workspace deps:
 
 ```
