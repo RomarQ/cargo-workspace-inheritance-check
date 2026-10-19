@@ -8,7 +8,7 @@ use toml_edit::{InlineTable, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::fix::{Edit, Fix, Promotion};
-use crate::workspace::{DepSource, DepSpec, MemberDep, Registry, WorkspaceInfo};
+use crate::workspace::{DepSource, DepSpec, MemberDep, WorkspaceInfo};
 
 /// A reported problem, with the fix that `--fix` applies or the reason it applies none.
 #[derive(Debug)]
@@ -33,13 +33,11 @@ pub fn run_checks(workspace: &WorkspaceInfo, promotion_threshold: usize) -> Vec<
                 findings.push(not_inherited(dep, ws));
             }
             None if dep.spec.package == dep.key => {
-                let registry = match &dep.spec.source {
-                    DepSource::Registry(Registry::CratesIo) => None,
-                    DepSource::Registry(Registry::Named(name)) => Some(name.as_str()),
-                    _ => continue,
+                let DepSource::Registry(registry) = &dep.spec.source else {
+                    continue;
                 };
                 candidates
-                    .entry((&dep.key, registry))
+                    .entry((&dep.key, registry.as_deref()))
                     .or_default()
                     .push(dep);
             }

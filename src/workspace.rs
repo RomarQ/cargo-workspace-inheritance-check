@@ -96,10 +96,13 @@ pub struct DepSpec {
 /// it, so two entries that differ only there are different dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepSource {
-    /// A dependency from a registry.
-    Registry(Registry),
+    /// A dependency from the registry that `registry` names, or from crates.io for `None`.
+    Registry(Option<String>),
     /// A local path, resolved against the directory of the manifest that declares it.
-    Path { path: PathBuf, registry: Registry },
+    Path {
+        path: PathBuf,
+        registry: Option<String>,
+    },
     /// A git repository and the `branch`, `tag`, or `rev` that the entry sets. The URL has no
     /// trailing `/` or `.git`, because cargo ignores both when it compares sources.
     Git {
@@ -107,19 +110,8 @@ pub enum DepSource {
         branch: Option<String>,
         tag: Option<String>,
         rev: Option<String>,
-        registry: Registry,
+        registry: Option<String>,
     },
-}
-
-/// The registry that an entry names with `registry` or `registry-index`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Registry {
-    /// crates.io, when the entry names no registry or names `crates-io`.
-    CratesIo,
-    /// An alternate registry by name, from `registry`.
-    Named(String),
-    /// A registry by index URL, from `registry-index`.
-    Index(String),
 }
 
 /// Dependency table names. Cargo accepts the underscore spellings before edition 2024.
@@ -478,24 +470,24 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// Parse a dependency entry declared in the manifest in `manifest_dir`. Returns `None` for a
-/// value that is neither a string nor a table. A `workspace` key is ignored, as cargo ignores it
-/// in `[workspace.dependencies]`.
+/// value that is neither a string nor a table, and for an entry with `registry-index`, which
+/// cargo writes only in a packaged manifest. A `workspace` key is ignored, as cargo ignores it in
+/// `[workspace.dependencies]`.
 fn parse_spec(key: &str, item: &Item, manifest_dir: &Path) -> Option<DepSpec> {
     if let Some(version) = item.as_str() {
         return Some(DepSpec {
             package: key.to_string(),
-            source: DepSource::Registry(Registry::CratesIo),
+            source: DepSource::Registry(None),
             version: Some(version.to_string()),
             default_features: true,
             underscore_default_features: false,
         });
     }
     let t = item.as_table_like()?;
-    let registry = match (str_field(t, "registry-index"), str_field(t, "registry")) {
-        (Some(index), _) => Registry::Index(index),
-        (None, Some(name)) if name != "crates-io" => Registry::Named(name),
-        (None, _) => Registry::CratesIo,
-    };
+    if t.contains_key("registry-index") {
+        return None;
+    }
+    let registry = str_field(t, "registry").filter(|name| name != "crates-io");
     let source = if let Some(path) = str_field(t, "path") {
         let path = manifest_dir.join(path);
         let path = std::fs::canonicalize(&path).unwrap_or(path);
