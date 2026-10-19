@@ -539,9 +539,9 @@ fn canonical_url(url: &str) -> String {
 /// Cargo's form of a plain URL, from its `CanonicalUrl` on a URL that the `url` crate parsed.
 /// `None` for a URL that is not plain.
 ///
-/// A plain URL is `scheme://[user@]host[:port][/path]` with only ASCII letters, digits, and these
-/// characters: `+.-` in the scheme, `._~-` in the user, `.-` in the host, and `._~-%` in a path
-/// segment. A `file` URL has no user, host, or port. A port has no leading zero. A path has no
+/// A plain URL is `scheme://[user@]host[:port][/path]`. Each part has only ASCII letters, digits,
+/// and some characters: `+.-` in the scheme, `._~-` in the user, `.-` in the host, and `._~-%` in a
+/// path segment. A `file` URL has no user, host, or port. A port has no leading zero. A path has no
 /// empty segment but a trailing `/`. It has no `.` or `..` segment, in any case, also not as
 /// `%2e` or before a `.git` that goes. Other URLs depend on more of the `url` crate's parsing
 /// rules. Cargo's form of a plain URL is plain too, so it never equals another URL as written.
