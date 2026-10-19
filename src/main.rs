@@ -5,7 +5,6 @@ use cargo_workspace_inheritance_check::check::{self, Finding};
 use cargo_workspace_inheritance_check::diagnostic::{DiagnosticKind, DiagnosticReport, Severity};
 use cargo_workspace_inheritance_check::fix;
 use cargo_workspace_inheritance_check::workspace;
-use clap::builder::RangedU64ValueParser;
 use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -23,11 +22,7 @@ struct Cli {
     path: PathBuf,
 
     /// Minimum crate count before suggesting workspace promotion
-    #[arg(
-        long,
-        default_value_t = 2,
-        value_parser = RangedU64ValueParser::<usize>::new().range(1..)
-    )]
+    #[arg(long, default_value_t = 2)]
     promotion_threshold: usize,
 
     /// Treat promotion candidates as errors

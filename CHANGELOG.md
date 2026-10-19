@@ -16,7 +16,6 @@ All notable changes to this project will be documented in this file.
 - An ignore rule's `member` is a path from the workspace root, and an absolute path works too. So `member = ".."` covers every crate below the parent directory of the root, including the crates inside the root. In 1.3.0 it covered every crate that the tool named with a leading `../`, and no crate inside the root. To keep that scope, write one rule for each directory outside the root, such as `../shared`.
 - A version requirement with only numbers and an optional `^` is compared by the versions it matches. So `"1"` and `"1.0"` are not a version mismatch. A promotion accepts members that write the same requirement in different ways. Any other requirement is compared as written.
 - `--path` can be a directory inside the workspace, as for cargo's own commands. The tool then checks the whole workspace, and `--fix` fixes the whole workspace.
-- `--promotion-threshold 0` is rejected.
 - toml_edit 0.25 reads TOML 1.1 manifests. The minimum supported Rust version is 1.88.
 
 ### Fixed
