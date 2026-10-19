@@ -95,6 +95,26 @@ fn test_path_inside_a_workspace_checks_the_whole_workspace() {
     assert_eq!(from_member.stdout, from_root.stdout, "{stderr}");
 }
 
+#[cfg(unix)]
+#[test]
+fn test_path_through_a_symlink_reads_the_workspace_it_points_into() {
+    let tmp = tempfile::tempdir().unwrap();
+    let crates =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/version_mismatch/crates");
+    std::os::unix::fs::symlink(crates, tmp.path().join("link")).unwrap();
+    let output = Command::new(BIN)
+        .args(["--path", "link/.."])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.ends_with("1 error, 0 warnings found\n"),
+        "{stdout}{stderr}"
+    );
+}
+
 #[test]
 fn test_fix_keeps_what_cargo_resolves() {
     let tmp = fixture_copy("fix_keeps_resolution");

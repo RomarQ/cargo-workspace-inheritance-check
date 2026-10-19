@@ -203,8 +203,9 @@ pub(crate) fn dep_table_mut<'a>(
 ///
 /// When `path/Cargo.toml` has no `[workspace]` table, `cargo locate-project --workspace` finds
 /// the root above `path`, as for cargo's own commands. Cargo decides the member set: this runs
-/// `cargo metadata --no-deps` in the root. The cargo is the one in the `CARGO` environment
-/// variable that cargo sets for subcommands, when it is not empty, or else `cargo` on `PATH`.
+/// `cargo metadata --no-deps` in `path` for the root manifest, so cargo reads each
+/// `.cargo/config.toml` from `path` up. The cargo is the one in the `CARGO` environment variable
+/// that cargo sets for subcommands, when it is not empty, or else `cargo` on `PATH`.
 ///
 /// # Errors
 ///
@@ -285,7 +286,9 @@ fn workspace_manifest(path: &Path) -> Result<(PathBuf, DocumentMut), String> {
 /// The members of the workspace whose root is `root`. Cargo runs in `dir`, as for cargo's own
 /// commands, so it reads each `.cargo/config.toml` from `dir` up.
 fn cargo_metadata(dir: &Path, root: &Path) -> Result<Metadata, String> {
-    let manifest = std::path::absolute(root.join("Cargo.toml"))
+    // Cargo resolves a `..` in `--manifest-path` as text, but the file system follows a symlink
+    // first, so give cargo the manifest that the tool reads.
+    let manifest = std::fs::canonicalize(root.join("Cargo.toml"))
         .map_err(|e| format!("Failed to resolve {}: {e}", root.display()))?;
     let args = [
         "--no-deps",

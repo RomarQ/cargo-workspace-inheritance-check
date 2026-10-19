@@ -18,7 +18,7 @@ enum OutputFormat {
 #[command(name = "cargo-workspace-inheritance-check", version)]
 #[command(about = "Check workspace dependency hygiene in Cargo workspaces")]
 struct Cli {
-    /// Path to the workspace root
+    /// Path to the workspace root, or to a directory inside it
     #[arg(long, default_value = ".")]
     path: PathBuf,
 
