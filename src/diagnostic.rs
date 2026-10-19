@@ -82,7 +82,8 @@ fn plural(count: usize) -> &'static str {
 }
 
 impl Diagnostic {
-    /// The diagnostic as text for a terminal. A promotion candidate takes several lines.
+    /// The diagnostic as text for a terminal. A promotion candidate, and a not-inherited error
+    /// that `--fix` skips, take several lines.
     pub fn format_human(&self) -> String {
         let dep = &self.dependency;
         let message = match &self.kind {

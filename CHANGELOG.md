@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
-- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`. An empty `CARGO` counts as unset. A relative `CARGO` path is resolved from the current directory.
+- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`. An empty `CARGO` counts as unset. The tool resolves a relative `CARGO` path from the current directory, and looks up a bare name, such as `cargo-1.88`, on `PATH`.
 - A member outside the workspace root is named from the root, such as `../shared/Cargo.toml`, also when `members` gives its absolute path.
 - A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, `registry-index`, path, or git). A path or git entry must also name the same `registry` or `registry-index`. `registry = "crates-io"` is crates.io. For a renamed entry, the JSON `dependency` value is the key.
 - Renamed, `registry-index`, path, and git dependencies are not promotion candidates. A promotion counts each crate once, and it gives no suggested version when two versions tie.
@@ -21,7 +21,7 @@ All notable changes to this project will be documented in this file.
 
 - `--fix` keeps what cargo resolves for each member, except the version on a mismatch and the features of the workspace entry. It removes every key that cargo ignores on an inherited entry, such as `path`, `git`, `package`, and `registry`, and keeps `features`, `optional`, and `public`.
 - `--fix` writes `default-features = true` where the member uses default features and the workspace entry disables them. It skips an entry that disables them when the workspace entry does not, and an entry with a version when the workspace entry has none.
-- The not-inherited error suggests the entry that `--fix` writes, with the `features`, `optional`, and `public` of the member entry, and `default-features = true` where the member needs it. When `--fix` skips the entry, the error gives the reason in a `hint:` line, not an entry.
+- The not-inherited error suggests the entry that `--fix` writes. The entry keeps the `features`, `optional`, and `public` of the member entry, and adds `default-features = true` where the member needs it. When `--fix` skips the entry, the error gives the reason in a `hint:` line, not an entry.
 - `--fix` skips a promotion whose members use different versions, or whose key `[workspace.dependencies]` already has. Before, members could move to another version or another registry.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
