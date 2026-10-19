@@ -538,14 +538,14 @@ fn canonical_url(url: &str) -> String {
 /// `None` for a URL that is not plain.
 ///
 /// A plain URL is `scheme://[user@]host[:port][/path]`, with ASCII letters, digits, and `.`, `_`,
-/// `~`, `-` (and `%` in the path) only. It has no `file` scheme, no port with a leading zero, no
-/// empty segment but a trailing `/`, and no `.` or `..` segment, also not as `%2e` or before a
-/// `.git` that goes. Other URLs depend on
+/// `~`, `-` (and `%` in the path) only. A `file` URL has no user, host, or port. It has no port
+/// with a leading zero, no empty segment but a trailing `/`, and no `.` or `..` segment, also not
+/// as `%2e` or before a `.git` that goes. Other URLs depend on
 /// more of the `url` crate's parsing rules. Cargo's form of a plain URL is plain too, so it never
 /// equals another URL as written.
 ///
-/// The scheme is lowercase. A special scheme (`http`, `https`, `ws`, `wss`, or `ftp`) has a
-/// lowercase host and drops its default port. One trailing `/` goes, unless the path is only `/`.
+/// The scheme is lowercase. A special scheme (`http`, `https`, `ws`, `wss`, `ftp`, or `file`) has
+/// a lowercase host and drops its default port. One trailing `/` goes, unless the path is only `/`.
 /// Then, unless the scheme has a `+`, a `github.com` URL becomes `https` with a lowercase path,
 /// and a final `.git` goes. Cargo writes the shortened last segment back, so its `%` becomes
 /// `%25`.
@@ -577,12 +577,16 @@ fn plain_canonical_url(url: &str) -> Option<String> {
     let plain_path = segments.iter().enumerate().all(|(i, segment)| {
         (segment.is_empty() && i + 1 == segments.len()) || plain_segment(segment)
     });
+    let plain_authority = if scheme == "file" {
+        authority.is_empty()
+    } else {
+        user.is_none_or(|user| plain(user, "._~-"))
+            && plain(host, ".-")
+            && port.is_none_or(|port| !port.starts_with('0') && port.parse::<u16>().is_ok())
+    };
     let is_plain = scheme.starts_with(|c: char| c.is_ascii_lowercase())
         && plain(&scheme, "+.-")
-        && scheme != "file"
-        && user.is_none_or(|user| plain(user, "._~-"))
-        && plain(host, ".-")
-        && port.is_none_or(|port| !port.starts_with('0') && port.parse::<u16>().is_ok())
+        && plain_authority
         && plain_path;
     if !is_plain {
         return None;
@@ -592,13 +596,14 @@ fn plain_canonical_url(url: &str) -> Option<String> {
     let mut path = path.to_string();
     let parse = |scheme: &str, host: &mut String, port: &mut Option<&str>, path: &mut String| {
         let default_port = match scheme {
-            "http" | "ws" => "80",
-            "https" | "wss" => "443",
-            "ftp" => "21",
+            "http" | "ws" => Some("80"),
+            "https" | "wss" => Some("443"),
+            "ftp" => Some("21"),
+            "file" => None,
             _ => return,
         };
         host.make_ascii_lowercase();
-        if *port == Some(default_port) {
+        if port.is_some() && *port == default_port {
             *port = None;
         }
         if path.is_empty() {
@@ -740,6 +745,7 @@ mod tests {
             ("ws://Example.com:80/x", "ws://example.com/x"),
             ("ftp://github.com:21/Foo/Bar", "https://github.com/foo/bar"),
             ("https://example.com", "https://example.com/"),
+            ("file:///repos/foo.git/", "file:///repos/foo"),
         ];
         let different = [
             ("https://gitlab.com/Foo/Bar", "https://gitlab.com/foo/bar"),
