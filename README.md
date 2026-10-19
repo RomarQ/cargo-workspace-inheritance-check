@@ -201,7 +201,7 @@ All inputs are optional:
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
 | `fix` | Automatically fix reported problems | `false` |
-| `version` | Version to install | `latest` |
+| `version` | Version to install, or `path` to build the crate in the action's own directory, so that the binary matches the action ref | `latest` |
 
 ### Without the action
 

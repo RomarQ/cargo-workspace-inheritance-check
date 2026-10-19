@@ -40,6 +40,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `--version`.
+- The action input `version: path` builds the crate in the action's own directory, so the binary matches the action ref.
 
 ## [1.3.0] - 2026-04-21
 
