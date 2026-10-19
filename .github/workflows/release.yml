@@ -110,33 +110,66 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Get version and publish
+      # Each step after the dry run can run again after a failure at the same commit.
+      - name: Get version
+        id: version
+        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Check the package
+        run: cargo publish --dry-run
+
+      - name: Tag the release
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          HEAD=$(git rev-parse HEAD)
+          # The last line is the commit that an annotated tag points at.
+          TAGGED=$(git ls-remote --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}" | tail -n 1 | cut -f 1)
+          if [ -z "$TAGGED" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+          elif [ "$TAGGED" != "$HEAD" ]; then
+            echo "${TAG} already points at ${TAGGED}, not at ${HEAD}. Bump the version to release this commit."
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG="v${VERSION}"
+          CRATE=cargo-workspace-inheritance-check
+          if curl -sf -A "${CRATE} release workflow" "https://crates.io/api/v1/crates/${CRATE}/${VERSION}" > /dev/null; then
+            echo "${CRATE} ${VERSION} is already on crates.io"
+          else
+            cargo publish
+          fi
 
-          # Extract changelog entry for this version
-          NOTES=$(sed -n "/^## \[${VERSION}\]/,/^## \[/{ /^## \[${VERSION}\]/p; /^## \[${VERSION}\]/!{ /^## \[/!p; } }" CHANGELOG.md)
-
-          # Tag and push
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG"
-          git push origin "$TAG"
-
-          # Update major version tag (e.g., v1) for action consumers
-          MAJOR_TAG="v$(echo "$VERSION" | cut -d. -f1)"
+      # The action installs the latest release, so the major version tag moves only after the
+      # publish.
+      - name: Update the major version tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          MAJOR_TAG="v${VERSION%%.*}"
           git tag -f "$MAJOR_TAG"
-          git push origin "$MAJOR_TAG" -f
+          git push -f origin "$MAJOR_TAG"
 
-          # Publish to crates.io
-          cargo publish
-
-          # Create GitHub release with changelog as notes
-          echo "$NOTES" > /tmp/release-notes.md
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "The release ${TAG} already exists"
+            exit 0
+          fi
+          # Extract changelog entry for this version
+          sed -n "/^## \[${VERSION}\]/,/^## \[/{ /^## \[${VERSION}\]/p; /^## \[${VERSION}\]/!{ /^## \[/!p; } }" CHANGELOG.md > /tmp/release-notes.md
           gh release create "$TAG" \
             --title "v${VERSION}" \
             --notes-file /tmp/release-notes.md
