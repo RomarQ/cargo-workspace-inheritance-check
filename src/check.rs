@@ -278,9 +278,9 @@ fn most_common_version(usages: &[&MemberDep]) -> Option<String> {
     most.next().is_none().then(|| version.to_string())
 }
 
-/// `true` when `a` and `b` match the same versions. A caret requirement with only numbers, such
-/// as `1` or `^1.0`, compares by its bounds. So `1` and `1.0` are the same, and `0` and `0.0` are
-/// not. Any other requirement compares as written.
+/// `true` when `a` and `b` match the same versions. A caret requirement without a pre-release, such
+/// as `1`, `^1.0`, or `^1.*`, compares by its bounds. So `1` and `1.0` are the same, and `0` and
+/// `0.0` are not. Any other requirement compares as written.
 fn same_requirement(a: &str, b: &str) -> bool {
     match (caret_bounds(a), caret_bounds(b)) {
         (Some(a), Some(b)) => a == b,
@@ -288,9 +288,9 @@ fn same_requirement(a: &str, b: &str) -> bool {
     }
 }
 
-/// The lower bound and the excluded upper bound of a caret requirement with only numbers, by
-/// cargo's caret rules. `None` for any other requirement, and for one that cargo rejects, such as
-/// `01`.
+/// The lower bound and the excluded upper bound of a single caret requirement without a
+/// pre-release, by cargo's caret rules. Build metadata does not count. `None` for any other
+/// requirement, and for one that cargo rejects, such as `01`.
 fn caret_bounds(requirement: &str) -> Option<([u64; 3], [u64; 3])> {
     let parsed = VersionReq::parse(requirement).ok()?;
     let [comparator] = &parsed.comparators[..] else {
@@ -424,9 +424,9 @@ mod tests {
             ("zero", "mismatch", true),
             ("rand", "mismatch", true),
             ("lead", "mismatch", false),
-            ("plus", "mismatch", false),
             ("tab", "mismatch", false),
             ("pre", "mismatch", true),
+            ("multi", "mismatch", true),
             (
                 "itoa",
                 "promotion Some(\"1\") writes Some(\"\\\"1\\\"\")",
