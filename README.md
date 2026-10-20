@@ -6,9 +6,7 @@ A Cargo subcommand that detects and fixes workspace dependency inheritance issue
 
 Cargo workspaces support [dependency inheritance](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), you declare shared dependency versions once in the root `Cargo.toml` under `[workspace.dependencies]`, and member crates reference them with `{ workspace = true }`. This prevents version drift and duplicated dependency specs across workspace members.
 
-However, **Cargo has no built-in lint** for detecting when a crate specifies a version directly instead of inheriting from the workspace. [Clippy issue #10306](https://github.com/rust-lang/rust-clippy/issues/10306) tracks this as a feature request but remains unimplemented.
-
-`cargo-workspace-inheritance-check` fills this gap.
+**Cargo has no built-in lint** for detecting when a crate specifies a version directly instead of inheriting from the workspace. [Cargo issue #15578](https://github.com/rust-lang/cargo/issues/15578) and [Clippy issue #10306](https://github.com/rust-lang/rust-clippy/issues/10306) track this as a feature request but remain unimplemented.
 
 ## What It Checks
 
@@ -37,13 +35,13 @@ error: `rand = "0.7"` in crates/bar/Cargo.toml has a different version than work
 
 ### 3. Candidate for workspace promotion (warning)
 
-A dependency appears in multiple crates but isn't declared in `[workspace.dependencies]`. This check helps you identify dependencies that should be centralized.
+A dependency appears in multiple crates but isn't declared in `[workspace.dependencies]`.
 
 ```
 warning: `serde_yaml` appears in 3 crates but is not in [workspace.dependencies]
+  --> crates/cli/Cargo.toml
   --> crates/config/Cargo.toml
   --> crates/node/Cargo.toml
-  --> crates/cli/Cargo.toml
   hint: consider adding `serde_yaml = "0.9"` to [workspace.dependencies]
 ```
 
@@ -54,12 +52,14 @@ By default, this is reported as a **warning** and does not cause the tool to exi
 ### How entries are compared
 
 - The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root, so the workspace must load in cargo.
-- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
+- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository and reference (`branch`, `tag`, or `rev`). Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
 - A version requirement with only numbers and an optional `^`, such as `"1"` or `"^1.0"`, is compared by the versions it matches. So `"1"` and `"1.0"` are the same requirement, and `"0"` and `"0.0"` are not. Any other requirement is compared as written.
 - A path or git dependency without a version is not checked.
 - A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A path or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
 
 ## Installation
+
+Requires Rust 1.88 or later.
 
 ```bash
 cargo install cargo-workspace-inheritance-check
@@ -114,7 +114,8 @@ cargo workspace-inheritance-check --fix
 
 - The member entry keeps `features`, `optional`, and `public`. The tool removes the keys that the workspace entry owns, such as `version`, `registry`, `path`, `git`, and `package`.
 - When the workspace entry sets `default-features = false` and the member uses default features, the tool writes `default-features = true` on the member.
-- When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
+- When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and cargo before 1.99 rejects it in edition 2024.
+- When the workspace entry spells the key `default_features` and the member uses edition 2024 or later, the tool skips the entry, because cargo rejects that spelling there.
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
@@ -172,6 +173,8 @@ Use `--format json` for machine-readable output, useful for integrating with oth
 }
 ```
 
+`check` is `not-inherited`, `version-mismatch`, or `promotion-candidate`.
+
 ## CI Integration
 
 ### GitHub Actions
@@ -199,7 +202,6 @@ All inputs are optional:
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
 | `fix` | Automatically fix reported problems | `false` |
-| `version` | Version to install, or `path` to build the crate in the action's own directory. With `path`, the binary matches the action ref. | `latest` |
 
 ### Without the action
 
@@ -213,7 +215,7 @@ All inputs are optional:
 Dependencies that use [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry) are handled correctly:
 
 - Promotion candidates are grouped by name **and** registry, so dependencies from different registries are never grouped together.
-- `--fix` carries `registry` into promoted workspace deps:
+- The hint and `--fix` carry `registry` into promoted workspace deps:
 
 ```
 warning: `my-crate` appears in 2 crates but is not in [workspace.dependencies]
