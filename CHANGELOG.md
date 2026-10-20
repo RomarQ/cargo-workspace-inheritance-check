@@ -6,8 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error.
-- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`.
+- The member set comes from `cargo metadata --no-deps`, so it follows cargo's rules. It includes the root package and the path dependencies inside the workspace root, and it applies `exclude` as cargo does. A workspace that cargo cannot load, or a member manifest that does not parse, is now an error, also with `--no-fail`.
+- The tool needs cargo at run time. It runs the cargo in `CARGO`, which cargo sets for a subcommand, or else `cargo` on `PATH`. So the job that runs the tool also needs what `cargo metadata` needs: the crates in submodules, each named registry (its index is enough), and a toolchain that reads every manifest.
 - A member outside the workspace root is named from the root, such as `../shared/Cargo.toml`, also when `members` gives its absolute path.
 - A member entry is compared with the workspace entry that has the same key, because cargo inherits by key. Both must name the same package from the same source (registry, path, or git). A path or git entry must also name the same `registry`. `registry = "crates-io"` is crates.io. For a renamed entry, the JSON `dependency` value is the key.
 - Renamed, path, and git dependencies are not promotion candidates. An entry with `registry-index`, which cargo writes only in a packaged manifest, is not checked. A promotion counts each crate once, and it gives no suggested version when two versions tie.
@@ -28,11 +28,11 @@ All notable changes to this project will be documented in this file.
 - `--fix` reads the `default_features` spelling, keeps the comment after a rewritten entry, and reports a fix only after it is written.
 - `--fix` keeps the CRLF line endings of a manifest that ends every line in CRLF.
 - `--fix` skips an entry of a member on edition 2024 or later when the workspace entry has a `default_features` key. Before, it wrote an inherited entry that cargo rejects.
-- Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked.
+- Inline tables are read at every level: dependency tables, target entries, `[workspace]` and its dependencies, and metadata. `--fix` also promotes into an inline `[workspace]`. `[dev_dependencies]` and `[build_dependencies]` are checked, unless the same scope also has the dash spelling, which cargo uses then.
 - `--path ./x` gives member paths relative to the workspace root.
 - The promotion warning for one crate says `appears in 1 crate`.
-- The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. Each input is one argument, so an input can no longer add other flags. It installs with `--locked`.
-- The GitHub Action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0 and a pinned commit runs that commit. Before, it installed the newest release from crates.io. The `version` input is removed, so pin the action ref to pick a version. GitHub warns about a `version` input that a workflow still passes.
+- The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. Bash no longer expands an input, so write `${{ github.workspace }}/x`, not `$GITHUB_WORKSPACE/x`. Each input is one argument, so an input can no longer add other flags. It installs with `--locked`.
+- The GitHub Action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0 and a pinned commit runs that commit. Before, it installed the newest release from crates.io. The `version` input is removed, so pin the action ref to pick a version. GitHub warns about a `version` input that a workflow still passes. The job's rustflags do not reach that build. Action refs up to `v1.3.0` keep installing the newest release, so set `version: "1.3.0"` there to stay on 1.3.0.
 
 ### Added
 

@@ -112,7 +112,8 @@ pub enum DepSource {
     },
 }
 
-/// Dependency table names. Cargo accepts the underscore spellings before edition 2024.
+/// Dependency table names. Cargo accepts the underscore spellings before edition 2024, and it
+/// ignores one when the same scope also has the dash spelling.
 const DEP_KINDS: [&str; 5] = [
     "dependencies",
     "dev-dependencies",
@@ -161,6 +162,9 @@ fn dep_tables(doc: &DocumentMut) -> impl Iterator<Item = (DepTable, &dyn TableLi
         .chain(targets)
         .flat_map(|(target, scope)| {
             DEP_KINDS.into_iter().filter_map(move |kind| {
+                if kind.contains('_') && scope.contains_key(&kind.replace('_', "-")) {
+                    return None;
+                }
                 let table = scope.get(kind)?.as_table_like()?;
                 let target = target.map(String::from);
                 Some((DepTable { target, kind }, table))
