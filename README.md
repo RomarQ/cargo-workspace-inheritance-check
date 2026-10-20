@@ -192,8 +192,6 @@ With options:
     promotion-threshold: 3
 ```
 
-The action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0, and `@v1` runs the newest 1.x release. It builds with the job's Rust toolchain, which must be 1.88 or later. Tags before `v1.4.0` install the newest release from crates.io.
-
 All inputs are optional:
 
 | Input | Description | Default |
