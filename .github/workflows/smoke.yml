@@ -13,12 +13,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
-      # Installs the latest release from crates.io. The other steps build this checkout, as the
-      # action does by default.
       - name: Clean workspace (should pass)
         uses: ./
         with:
-          version: latest
           path: tests/fixtures/valid_workspace
 
       - name: Promotion candidate (should warn)

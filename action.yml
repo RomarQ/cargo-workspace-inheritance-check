@@ -31,25 +31,15 @@ inputs:
     description: "Automatically fix reported problems"
     required: false
     default: "false"
-  version:
-    description: "Version of cargo-workspace-inheritance-check to install from crates.io, or latest. Empty builds the tool from the action's own ref."
-    required: false
-    default: ""
 
 runs:
   using: "composite"
   steps:
+    # Build the tool from the action's own ref, so the ref pins the tool. The build goes to the
+    # runner's temp folder, because the action's folder can be read-only.
     - name: Install cargo-workspace-inheritance-check
       shell: bash
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-      run: |
-        # The build goes to the runner's temp folder, because the action's folder can be read-only.
-        case "$INPUT_VERSION" in
-          "") cargo install --locked --path "$GITHUB_ACTION_PATH" --target-dir "$RUNNER_TEMP/cargo-workspace-inheritance-check" ;;
-          latest) cargo install --locked cargo-workspace-inheritance-check ;;
-          *) cargo install --locked cargo-workspace-inheritance-check --version "$INPUT_VERSION" ;;
-        esac
+      run: cargo install --locked --path "$GITHUB_ACTION_PATH" --target-dir "$RUNNER_TEMP/cargo-workspace-inheritance-check"
 
     - name: Run cargo-workspace-inheritance-check
       shell: bash
