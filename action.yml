@@ -39,6 +39,10 @@ runs:
     # runner's temp folder, because the action's folder can be read-only.
     - name: Install cargo-workspace-inheritance-check
       shell: bash
+      # Cargo caps the lints of a crates.io package, but not of a path package. Cap them here
+      # too, so the job's rustflags and lint settings cannot fail the install.
+      env:
+        CARGO_ENCODED_RUSTFLAGS: --cap-lints=allow
       run: cargo install --locked --path "$GITHUB_ACTION_PATH" --target-dir "$RUNNER_TEMP/cargo-workspace-inheritance-check"
 
     - name: Run cargo-workspace-inheritance-check

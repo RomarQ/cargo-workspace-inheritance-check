@@ -13,8 +13,11 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
+      # rustc rejects this flag, so the install fails if the job's rustflags reach the build.
       - name: Clean workspace (should pass)
         uses: ./
+        env:
+          RUSTFLAGS: --flag-that-rustc-rejects
         with:
           path: tests/fixtures/valid_workspace
 
