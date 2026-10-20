@@ -32,11 +32,11 @@ All notable changes to this project will be documented in this file.
 - `--path ./x` gives member paths relative to the workspace root.
 - The promotion warning for one crate says `appears in 1 crate`.
 - The GitHub Action passes its inputs through the environment, so a path with a space works and an input cannot run shell code. Each input is one argument, so an input can no longer add other flags. It installs with `--locked`.
+- The GitHub Action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0 and a pinned commit runs that commit. Before, it installed the newest release from crates.io. Set `version` to a crates.io version, or to `latest`, to install from crates.io.
 
 ### Added
 
 - `--version`.
-- The action input `version: path` builds the crate in the action's own directory, so the binary matches the action ref.
 
 ## [1.3.0] - 2026-04-21
 

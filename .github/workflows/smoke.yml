@@ -13,22 +13,22 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
-      # Installs the latest release. Each later step builds this checkout, with `version: path`.
+      # Installs the latest release from crates.io. The other steps build this checkout, as the
+      # action does by default.
       - name: Clean workspace (should pass)
         uses: ./
         with:
+          version: latest
           path: tests/fixtures/valid_workspace
 
       - name: Promotion candidate (should warn)
         uses: ./
         with:
-          version: path
           path: tests/fixtures/promotion_candidate
 
       - name: JSON output
         uses: ./
         with:
-          version: path
           path: tests/fixtures/not_inherited
           format: json
           no-fail: true
@@ -38,7 +38,6 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: path
           path: tests/fixtures/valid_workspace
           format: yaml
 
@@ -47,14 +46,12 @@ jobs:
         continue-on-error: true
         uses: ./
         with:
-          version: path
           path: tests/fixtures/promotion_candidate
           promotion-failure: true
 
       - name: Promotion failure, threshold 3 (should pass)
         uses: ./
         with:
-          version: path
           path: tests/fixtures/promotion_candidate
           promotion-failure: true
           promotion-threshold: 3
@@ -71,7 +68,6 @@ jobs:
       - name: Fix
         uses: ./
         with:
-          version: path
           path: tests/fixtures/version_mismatch
           fix: true
 

@@ -32,9 +32,9 @@ inputs:
     required: false
     default: "false"
   version:
-    description: "Version of cargo-workspace-inheritance-check to install, or path to build the crate in the action's own directory"
+    description: "Version of cargo-workspace-inheritance-check to install from crates.io, or latest. Empty builds the tool from the action's own ref."
     required: false
-    default: "latest"
+    default: ""
 
 runs:
   using: "composite"
@@ -44,9 +44,10 @@ runs:
       env:
         INPUT_VERSION: ${{ inputs.version }}
       run: |
+        # The build goes to the runner's temp folder, because the action's folder can be read-only.
         case "$INPUT_VERSION" in
+          "") cargo install --locked --path "$GITHUB_ACTION_PATH" --target-dir "$RUNNER_TEMP/cargo-workspace-inheritance-check" ;;
           latest) cargo install --locked cargo-workspace-inheritance-check ;;
-          path) cargo install --locked --path "$GITHUB_ACTION_PATH" ;;
           *) cargo install --locked cargo-workspace-inheritance-check --version "$INPUT_VERSION" ;;
         esac
 

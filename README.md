@@ -199,7 +199,7 @@ All inputs are optional:
 | `format` | Output format: `human` or `json` | `human` |
 | `no-fail` | Exit 0 even when errors are found | `false` |
 | `fix` | Automatically fix reported problems | `false` |
-| `version` | Version to install, or `path` to build the crate in the action's own directory. With `path`, the binary matches the action ref. | `latest` |
+| `version` | Version to install from crates.io, or `latest`. When empty, the action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0. | empty |
 
 ### Without the action
 
