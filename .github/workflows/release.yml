@@ -148,8 +148,6 @@ jobs:
             cargo publish
           fi
 
-      # The action installs the latest release, so the major version tag moves only after the
-      # publish.
       - name: Update the major version tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
