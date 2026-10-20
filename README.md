@@ -6,7 +6,7 @@ A Cargo subcommand that detects and fixes workspace dependency inheritance issue
 
 Cargo workspaces support [dependency inheritance](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), you declare shared dependency versions once in the root `Cargo.toml` under `[workspace.dependencies]`, and member crates reference them with `{ workspace = true }`. This prevents version drift and duplicated dependency specs across workspace members.
 
-However, **Cargo has no built-in lint** for detecting when a crate specifies a version directly instead of inheriting from the workspace. [Cargo issue #15578](https://github.com/rust-lang/cargo/issues/15578) and [Clippy issue #10306](https://github.com/rust-lang/rust-clippy/issues/10306) track this as a feature request but remain unimplemented.
+**Cargo has no built-in lint** for detecting when a crate specifies a version directly instead of inheriting from the workspace. [Cargo issue #15578](https://github.com/rust-lang/cargo/issues/15578) and [Clippy issue #10306](https://github.com/rust-lang/rust-clippy/issues/10306) track this as a feature request but remain unimplemented.
 
 ## What It Checks
 
