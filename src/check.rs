@@ -503,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reads_every_dependency_table() {
+    fn test_reads_the_dependency_tables_that_cargo_reads() {
         let diags = check("dependency_tables");
         let app = "crates/app/Cargo.toml";
         assert_eq!(
