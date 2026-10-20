@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.4.0] - 2026-10-20
+
+**Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.3.0...v1.4.0
 
 ### Changed
 
