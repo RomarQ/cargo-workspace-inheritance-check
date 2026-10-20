@@ -4,20 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.4.0] - 2026-10-20
 
-## What's Changed
-* doc(README): Improve table rendering by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/21
-* fix: follow cargo's rules for members, inheritance, and --fix by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/22
-* fix: name a member outside the workspace root relative to the root by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/23
-* fix: match ignore scopes as paths and correct messages and --fix by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/24
-* fix: suggest what --fix writes, and drop code the check does not need by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/25
-* fix: make the action build the tool from its own ref by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/27
-* fix: cap the action's lints and skip ignored underscore tables by @RomarQ in https://github.com/RomarQ/cargo-workspace-inheritance-check/pull/28
-
-
 **Full Changelog**: https://github.com/RomarQ/cargo-workspace-inheritance-check/compare/v1.3.0...v1.4.0
-
-
-## [Unreleased]
 
 ### Changed
 
