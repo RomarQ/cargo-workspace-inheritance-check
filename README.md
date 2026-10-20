@@ -1,14 +1,12 @@
 # Check Dependency Inheritance in Cargo Workspaces
 
-A Cargo subcommand that detects and fixes workspace dependency inheritance issues in Cargo workspaces. It finds crates that specify dependency versions directly instead of using [`workspace = true`](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), flags version mismatches, suggests candidates for workspace promotion, and can fix most of the reported problems.
+A Cargo subcommand that finds the crates of a workspace that specify a dependency version directly instead of using [`workspace = true`](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace). It also flags version mismatches, suggests dependencies to add to `[workspace.dependencies]`, and can fix most of the problems that it reports.
 
 ## Why?
 
-Cargo workspaces support [dependency inheritance](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace), you declare shared dependency versions once in the root `Cargo.toml` under `[workspace.dependencies]`, and member crates reference them with `{ workspace = true }`. This prevents version drift and duplicated dependency specs across workspace members.
+Cargo workspaces support [dependency inheritance](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace). You declare a shared dependency once in the root `Cargo.toml` under `[workspace.dependencies]`, and member crates use it with `{ workspace = true }`. Then all members use the same version, and each dependency is declared in one place.
 
-However, **Cargo has no built-in lint** for detecting when a crate specifies a version directly instead of inheriting from the workspace. [Clippy issue #10306](https://github.com/rust-lang/rust-clippy/issues/10306) tracks this as a feature request but remains unimplemented.
-
-`cargo-workspace-inheritance-check` fills this gap.
+**Cargo has no built-in lint** that finds a crate that specifies a version directly instead of inheriting it from the workspace. [cargo#15578](https://github.com/rust-lang/cargo/issues/15578) and [rust-clippy#10306](https://github.com/rust-lang/rust-clippy/issues/10306) request one.
 
 ## What It Checks
 
@@ -20,7 +18,7 @@ A crate declares a dependency with an explicit version that already exists in `[
 error: `serde = "1.0"` in crates/foo/Cargo.toml should use `serde = { workspace = true }`
 ```
 
-The suggested entry is the entry that `--fix` writes. It keeps `features`, `optional`, and `public`, and it adds `default-features = true` when the member needs it. When the member cannot inherit the workspace entry as it is, the error gives the reason, not an entry:
+The suggested entry is the entry that `--fix` writes. It keeps `features`, `optional`, and `public`, and it adds `default-features = true` when the member needs it. When the member cannot inherit the workspace entry as it is, a `hint:` line gives the reason instead of an entry:
 
 ```
 error: `core = "0.1"` in crates/foo/Cargo.toml should inherit from [workspace.dependencies]
@@ -37,13 +35,13 @@ error: `rand = "0.7"` in crates/bar/Cargo.toml has a different version than work
 
 ### 3. Candidate for workspace promotion (warning)
 
-A dependency appears in multiple crates but isn't declared in `[workspace.dependencies]`. This check helps you identify dependencies that should be centralized.
+A dependency appears in multiple crates but isn't declared in `[workspace.dependencies]`.
 
 ```
 warning: `serde_yaml` appears in 3 crates but is not in [workspace.dependencies]
+  --> crates/cli/Cargo.toml
   --> crates/config/Cargo.toml
   --> crates/node/Cargo.toml
-  --> crates/cli/Cargo.toml
   hint: consider adding `serde_yaml = "0.9"` to [workspace.dependencies]
 ```
 
@@ -53,13 +51,15 @@ By default, this is reported as a **warning** and does not cause the tool to exi
 
 ### How entries are compared
 
-- The members are the crates that cargo reports for the workspace, including the root package and path dependencies inside the workspace root, so the workspace must load in cargo.
-- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository. Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
+- The members are the crates that `cargo metadata` reports for the workspace, including the root package and path dependencies inside the workspace root. So the tool needs cargo, and the workspace must load in cargo.
+- Cargo inherits a dependency by its key, so a member entry is compared with the `[workspace.dependencies]` entry that has the same key. Both must name the same package (`package = "..."`) from the same source: the same registry, path, or git repository and reference (`branch`, `tag`, or `rev`). Otherwise the member cannot inherit that entry, and the tool reports nothing for it.
 - A version requirement with only numbers and an optional `^`, such as `"1"` or `"^1.0"`, is compared by the versions it matches. So `"1"` and `"1.0"` are the same requirement, and `"0"` and `"0.0"` are not. Any other requirement is compared as written.
-- A path or git dependency without a version is not checked.
+- A member's path or git dependency without a version is not checked.
 - A promotion candidate is a dependency from crates.io or from a named `registry`, and it is not renamed. A path or git dependency is not a promotion candidate. Each crate counts once, even when it lists the dependency in several sections.
 
 ## Installation
+
+The tool needs Rust 1.88 or later.
 
 ```bash
 cargo install cargo-workspace-inheritance-check
@@ -69,7 +69,7 @@ cargo install cargo-workspace-inheritance-check
 
 ### Default behavior
 
-Running without any flags checks all workspace members against `[workspace.dependencies]` in the root `Cargo.toml`. It reports errors for dependencies not using inheritance ([checks 1 and 2](#what-it-checks)) and warnings for promotion candidates ([check 3](#3-candidate-for-workspace-promotion-warning)). The tool exits with code 1 if any **errors** are found, and 0 if there are only warnings or no issues.
+Run it in the workspace root, or pass `--path`. Without flags, it checks all workspace members against `[workspace.dependencies]` in the root `Cargo.toml`. It reports errors for dependencies not using inheritance ([checks 1 and 2](#what-it-checks)) and warnings for promotion candidates ([check 3](#3-candidate-for-workspace-promotion-warning)). The tool exits with code 1 if any **errors** are found, and 0 if there are only warnings or no issues.
 
 ```bash
 cargo workspace-inheritance-check
@@ -80,10 +80,10 @@ cargo workspace-inheritance-check
 | Flag <br/>_________________________ | Description | Default |
 |-------------------|-------------|---------|
 | `--path <PATH>` | Path to the workspace root | `.` |
-| `--promotion-threshold <N>` | Minimum number of crates a dependency must appear in before it is flagged as a promotion candidate. For example, `--promotion-threshold 3` means a dependency must appear in at least 3 crates to trigger a warning. | `2` |
-| `--promotion-failure` | Promote promotion candidate warnings to errors, causing the tool to exit with code 1 when candidates are found. Useful in CI when you want to enforce that all shared dependencies are declared in `[workspace.dependencies]`. | `false` |
+| `--promotion-threshold <N>` | Minimum number of crates a dependency must appear in before it is flagged as a promotion candidate. | `2` |
+| `--promotion-failure` | Report promotion candidates as errors, so the tool exits with code 1 when it finds one. | `false` |
 | `--format <FORMAT>` | Output format: `human` or `json` | `human` |
-| `--no-fail` | Exit with code 0 even when errors are found. Useful when you want to see the report without failing a CI pipeline. | `false` |
+| `--no-fail` | Exit with code 0 even when errors are found. | `false` |
 | `--fix` | Fix the reported problems, then check again and report the problems that remain. For not-inherited and version-mismatch errors, rewrites the entry to `{ workspace = true }`. For promotion candidates, adds the dependency to `[workspace.dependencies]` and updates the member crates. See [What `--fix` changes](#what---fix-changes). | `false` |
 
 ### Examples
@@ -114,7 +114,8 @@ cargo workspace-inheritance-check --fix
 
 - The member entry keeps `features`, `optional`, and `public`. The tool removes the keys that the workspace entry owns, such as `version`, `registry`, `path`, `git`, and `package`.
 - When the workspace entry sets `default-features = false` and the member uses default features, the tool writes `default-features = true` on the member.
-- When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and older cargo releases reject it in edition 2024.
+- When the member sets `default-features = false` and the workspace entry enables default features, the tool skips the entry. Cargo ignores the member value in edition 2021, and cargo before 1.99 rejects it in edition 2024.
+- When the workspace entry uses the `default_features` spelling and the member uses edition 2024 or later, the tool skips the entry, because cargo rejects that spelling there.
 - A promoted entry gets `default-features = false` when any member sets it. The other members then get `default-features = true`.
 - When the member gives a version and the workspace entry gives none, the tool skips the entry, because inheriting would drop the version requirement.
 - The tool skips a promotion when the members use different versions, or when `[workspace.dependencies]` already has the key.
@@ -133,7 +134,7 @@ With `--fix`, the exit code reflects the errors that remain after the fixes. `--
 
 ## Ignore Rules
 
-You can skip specific dependencies from being checked by adding ignore rules to your workspace root `Cargo.toml`:
+To skip a dependency, add an ignore rule to the workspace root `Cargo.toml`:
 
 ```toml
 [workspace.metadata.inheritance-check]
@@ -151,7 +152,7 @@ Ignored dependencies are skipped in both reporting and fixing.
 
 ## JSON Output
 
-Use `--format json` for machine-readable output, useful for integrating with other tools or custom CI scripts:
+`--format json` prints the report as JSON:
 
 ```json
 {
@@ -172,6 +173,8 @@ Use `--format json` for machine-readable output, useful for integrating with oth
 }
 ```
 
+`check` is `not-inherited`, `version-mismatch`, or `promotion-candidate`.
+
 ## CI Integration
 
 ### GitHub Actions
@@ -189,7 +192,7 @@ With options:
     promotion-threshold: 3
 ```
 
-The action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0, and `@v1` runs the newest 1.x release.
+The action builds the tool from its own ref, so `@v1.4.0` runs 1.4.0, and `@v1` runs the newest 1.x release. It uses the job's Rust toolchain, which must be 1.88 or later. Tags before `v1.4.0` install the newest release from crates.io instead.
 
 All inputs are optional:
 
@@ -211,10 +214,10 @@ All inputs are optional:
 
 ## Alternate Registry Support
 
-Dependencies that use [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry) are handled correctly:
+For dependencies from [alternate registries](https://doc.rust-lang.org/cargo/reference/registries.html#using-an-alternate-registry):
 
 - Promotion candidates are grouped by name **and** registry, so dependencies from different registries are never grouped together.
-- `--fix` carries `registry` into promoted workspace deps:
+- The promotion hint names the registry, and `--fix` writes that entry to `[workspace.dependencies]`:
 
 ```
 warning: `my-crate` appears in 2 crates but is not in [workspace.dependencies]
